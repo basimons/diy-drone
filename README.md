@@ -1,7 +1,7 @@
 # DIY Pi Drone
 
 A 5" quadcopter where a Raspberry Pi 5 runs hand-written flight code in Rust.
-Hardware, wiring and goals are in [drone-design.md](drone-design.md).
+Hardware, wiring and goals are in [drone-design.md](drone-design.md). The client ↔ drone link protocol is in [protocol.md](protocol.md).
 
 ## Projects
 

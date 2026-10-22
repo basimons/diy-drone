@@ -1,10 +1,10 @@
-# Link Protocol — Design
+# Link Protocol
 
 *2026-10-22. Status: agreed in conversation, ready for planning.*
 
 ## 1. Intent
 
-The drone and the laptop talk over a byte link. We design **our own protocol** for that link, for fun and for learning, instead of being limited to what ELRS's CRSF format can carry.
+The drone and the client talk over a byte link. We design **our own protocol** for that link, for fun and for learning, instead of being limited to what ELRS's CRSF format can carry.
 
 The protocol must run over any plain byte pipe:
 - **ELRS in Airport mode** (the radios become a transparent serial link) — the main use.
@@ -30,7 +30,7 @@ At the same time the drone must still be flyable with **standard ELRS/CRSF** (no
 
 **Anti-goals**
 - A format where adding a message or setting forces a redesign.
-- A stale or frozen laptop that the drone cannot detect (see §6 rule 4).
+- A stale or frozen client that the drone cannot detect (see §6 rule 4).
 
 ## 3. Architecture: adapters and the internal state
 
@@ -118,14 +118,14 @@ The envelope is COBS-encoded (Consistent Overhead Byte Stuffing) so it contains 
 | `0x60–0x6F` | Data streams | `0x60` RequestOnce, `0x61` Subscribe, `0x62` StreamData |
 | `0x70–0x7F` | Logs | `0x70` ListLogs, `0x71` LogList, `0x72` ReadLog, `0x73` LogChunk |
 
-Direction: L→D = laptop to drone, D→L = drone to laptop. The diagrams below show the **payload** only; every message is wrapped in the envelope of §4.1.
+Direction: C→D = client (laptop) to drone, D→C = drone to client. The diagrams below show the **payload** only; every message is wrapped in the envelope of §4.1.
 
 ### 5.0 Requests and answers *(my call)*
 
-- A **request** is any L→D message except Sticks, Hello and Ping: commands, SetSettings, GetSettings, Subscribe, RequestOnce, ListLogs, ReadLog.
-- Every request payload **starts with a Request ID (u16)**: an idempotency key the laptop picks by counting up its requests (skipping 0). It is separate from the envelope Sequence.
+- A **request** is any C→D message except Sticks, Hello and Ping: commands, SetSettings, GetSettings, Subscribe, RequestOnce, ListLogs, ReadLog.
+- Every request payload **starts with a Request ID (u16)**: an idempotency key the client picks by counting up its requests (skipping 0). It is separate from the envelope Sequence.
 - Every request gets **exactly one answer**: its data message (Settings, StreamData, LogList, LogChunk, which echo the Request ID), or a Reply. Errors (unknown stream/group/log ID, bad rate, refused) are always a Reply.
-- **Resending:** if no answer arrives within a timeout, the laptop resends the request with the **same Request ID** (and a new Sequence). The drone remembers the last 16 Request IDs it handled; a repeat is answered again without executing twice.
+- **Resending:** if no answer arrives within a timeout, the client resends the request with the **same Request ID** (and a new Sequence). The drone remembers the last 16 Request IDs it handled; a repeat is answered again without executing twice.
 - Data sent without a request (default and subscribed streams) uses Request ID 0.
 - Request ID is 2 bytes (not 1) so that many requests in flight (e.g. pipelined ReadLog over WiFi) never wrap into IDs the drone still remembers.
 
@@ -142,7 +142,7 @@ seq 150  Flip, Request ID 7   ← resend: new Sequence, same Request ID
 
 ### 5.1 Connection
 
-**Hello** (`0x01`, L→D):
+**Hello** (`0x01`, C→D):
 
 ```
  0                   1                   2                   3
@@ -157,9 +157,9 @@ seq 150  Flip, Request ID 7   ← resend: new Sequence, same Request ID
 where:
 
 - **Protocol Version (Ver):** 2 bytes, u16. Starts at 1.
-- **Options (Opt):** 4 bytes, u32. Options the laptop wants. Bit 0 = authentication. Bits 1–31 free. For now Opt == 0.
+- **Options (Opt):** 4 bytes, u32. Options the client wants. Bit 0 = authentication. Bits 1–31 free. For now Opt == 0.
 
-**HelloReply** (`0x02`, D→L):
+**HelloReply** (`0x02`, D→C):
 
 ```
  0                   1                   2                   3
@@ -175,7 +175,7 @@ where:
 
 - **Protocol Version (Ver):** 2 bytes, u16. The drone's version.
 - **Result (R):** 1 byte. One of: 0 = OK, 1 = version mismatch, 2 = option not supported.
-- **Options (Opt):** 4 bytes, u32. The options the drone accepted. When R == 2, the bits the laptop asked for that are missing here are the unsupported ones.
+- **Options (Opt):** 4 bytes, u32. The options the drone accepted. When R == 2, the bits the client asked for that are missing here are the unsupported ones.
 
 **Ping** (`0x03`, either direction) and **Pong** (`0x04`, the answer):
 
@@ -195,12 +195,12 @@ Rules:
 
 - **Until a handshake succeeds, everything except Hello and Ping is ignored.**
 - **Hello and HelloReply carry Sequence 0.** On a valid Hello the drone resets both counters; its HelloReply is its message 0. *(My call.)*
-- **A new Hello restarts the session at the protocol layer only:** sequence counters, subscriptions (back to the default set) and the remembered Request IDs. It does **not** touch the internal state (sticks, armed state, settings). Sticks stop arriving while the laptop reconnects; that gap is handled by the normal link-loss logic like any other silence. *(My call.)*
+- **A new Hello restarts the session at the protocol layer only:** sequence counters, subscriptions (back to the default set) and the remembered Request IDs. It does **not** touch the internal state (sticks, armed state, settings). Sticks stop arriving while the client reconnects; that gap is handled by the normal link-loss logic like any other silence. *(My call.)*
 - When authentication is added, the handshake is also where both sides exchange fresh random numbers for the session (protection against replaying recorded messages). Not now.
 
 ### 5.2 Control
 
-**Sticks** (`0x10`, L→D):
+**Sticks** (`0x10`, C→D):
 
 ```
  0                   1                   2                   3
@@ -221,11 +221,11 @@ where:
 
 Values are stick positions, not distances; the flight code decides what they mean.
 
-**The laptop sends Sticks at a steady rate whenever connected, even if nothing changed.** This is also the laptop's heartbeat. Target 50 Hz; may be lowered if the link is too slow (see §8).
+**The client sends Sticks at a steady rate whenever connected, even if nothing changed.** This is also the client's heartbeat. Target 50 Hz; may be lowered if the link is too slow (see §8).
 
 ### 5.3 Commands
 
-**Arm** (`0x20`), **Disarm** (`0x21`), **TakeOff** (`0x22`), **Land** (`0x23`), **GoHome** (`0x24`), all L→D:
+**Arm** (`0x20`), **Disarm** (`0x21`), **TakeOff** (`0x22`), **Land** (`0x23`), **GoHome** (`0x24`), all C→D:
 
 ```
  0                   1                   2                   3
@@ -239,7 +239,7 @@ where:
 
 - **Request ID (RID):** 2 bytes, u16, RID != 0. See §5.0.
 
-**Flip** (`0x25`, L→D):
+**Flip** (`0x25`, C→D):
 
 ```
  0                   1                   2                   3
@@ -261,7 +261,7 @@ GoHome is reserved until GPS is fitted; until then the drone answers "not suppor
 
 ### 5.4 Replies and events
 
-**Reply** (`0x40`, D→L):
+**Reply** (`0x40`, D→C):
 
 ```
  0                   1                   2                   3
@@ -280,7 +280,7 @@ where:
 - **Status (St):** 1 byte. One of: 0 = OK, 1 = refused, 2 = unknown type, 3 = malformed, 4 = not supported, 5 = busy.
 - **Reason (Rsn):** 2 bytes, u16. Code whose meaning depends on the request (e.g. "too low", "battery low"). 0 = no reason given. Code list: builder's call, defined in `drone-common`.
 
-**Event** (`0x41`, D→L, never an answer, so no Request ID):
+**Event** (`0x41`, D→C, never an answer, so no Request ID):
 
 ```
  0                   1                   2                   3
@@ -322,7 +322,7 @@ where:
 - **Length (Len):** 1 byte. Number of bytes in Values; Len == size(Values). Lets the receiver reject malformed messages cleanly.
 - **Values:** Len bytes, layout per group. Decimal values are f32.
 
-**SetSettings** (`0x50`, L→D):
+**SetSettings** (`0x50`, C→D):
 
 ```
  0                   1                   2                   3
@@ -342,7 +342,7 @@ where:
 
 **SetSettings is all-or-nothing.** The drone checks every group first. Any problem → nothing changes, one Reply with the reason. All good → every change takes effect at the same moment, between two flight-loop runs, and one Reply with OK.
 
-**GetSettings** (`0x51`, L→D):
+**GetSettings** (`0x51`, C→D):
 
 ```
  0                   1                   2                   3
@@ -360,7 +360,7 @@ where:
 - **Request ID (RID):** 2 bytes, u16, RID != 0.
 - **Group ID list:** variable length, one or more u16 group IDs.
 
-**Settings** (`0x52`, D→L, the answer to GetSettings): same layout as SetSettings, with the Request ID of the GetSettings it answers. An unknown group ID gives a Reply instead.
+**Settings** (`0x52`, D→C, the answer to GetSettings): same layout as SetSettings, with the Request ID of the GetSettings it answers. An unknown group ID gives a Reply instead.
 
 First groups (layouts: builder's call): PID gains (per axis), attitude estimator (filter choice + that filter's values).
 
@@ -368,7 +368,7 @@ First groups (layouts: builder's call): PID gains (per axis), attitude estimator
 
 Each kind of live data is a numbered **stream** (16-bit ID).
 
-**Subscribe** (`0x61`, L→D):
+**Subscribe** (`0x61`, C→D):
 
 ```
  0                   1                   2                   3
@@ -388,7 +388,7 @@ where:
 
 Answered with a Reply (OK, or e.g. unknown stream / rate not possible).
 
-**RequestOnce** (`0x60`, L→D):
+**RequestOnce** (`0x60`, C→D):
 
 ```
  0                   1                   2                   3
@@ -405,7 +405,7 @@ where:
 
 Answered with one StreamData carrying this Request ID (or a Reply on error).
 
-**StreamData** (`0x62`, D→L):
+**StreamData** (`0x62`, D→C):
 
 ```
  0                   1                   2                   3
@@ -444,11 +444,11 @@ First streams (field layouts: builder's call, units as given):
 
 ### 5.7 Logs
 
-The drone records detailed data (sensors, PID internals, motor outputs) to its SD card. The laptop can fetch it through the protocol: slowly over radio, quickly over WiFi.
+The drone records detailed data (sensors, PID internals, motor outputs) to its SD card. The client can fetch it through the protocol: slowly over radio, quickly over WiFi.
 
-**ListLogs** (`0x70`, L→D): payload is only a Request ID, same layout as the simple commands in §5.3.
+**ListLogs** (`0x70`, C→D): payload is only a Request ID, same layout as the simple commands in §5.3.
 
-**LogList** (`0x71`, D→L):
+**LogList** (`0x71`, D→C):
 
 ```
  0                   1                   2                   3
@@ -483,7 +483,7 @@ where:
 - **Log ID (LID):** 2 bytes, u16.
 - **Size:** 4 bytes, u32, in bytes.
 
-**ReadLog** (`0x72`, L→D):
+**ReadLog** (`0x72`, C→D):
 
 ```
  0                   1                   2                   3
@@ -501,7 +501,7 @@ where:
 - **Log ID (LID):** 2 bytes, u16.
 - **Offset (Off):** 4 bytes, u32. Byte position to start reading from.
 
-**LogChunk** (`0x73`, D→L):
+**LogChunk** (`0x73`, D→C):
 
 ```
  0                   1                   2                   3
@@ -525,7 +525,7 @@ where:
 
 Rules:
 
-- The laptop asks by **position**, so a lost chunk is just asked for again; the drone keeps no download state.
+- The client asks by **position**, so a lost chunk is just asked for again; the drone keeps no download state.
 - An offset at/after the end returns a LogChunk with no Data.
 - What goes into a log and its file format: out of scope here.
 
@@ -534,8 +534,8 @@ Rules:
 1. Only messages with a valid CRC count, for anything.
 2. Each side's sequence counter starts at 0 at handshake and increments per sent message.
 3. A Reply refers to the request's request ID and type.
-4. **Liveness:** the laptop's Sticks stream is its heartbeat; the drone's default status stream is the drone's heartbeat. How long a silence means "link lost" is drone/client logic (the design doc's 250 ms).
-5. **Liveness over CRSF:** in standard ELRS mode the TX module keeps repeating the last values even if the laptop program freezes, so silence is not enough. As already in drone-design.md, the client puts a counter on a spare channel that changes every frame. The CRSF adapter's link health records both "last valid frame" and "last time the counter changed"; the internal state's link-health type has room for both. *(Which channel: builder's call.)*
+4. **Liveness:** the client's Sticks stream is its heartbeat; the drone's default status stream is the drone's heartbeat. How long a silence means "link lost" is drone/client logic (the design doc's 250 ms).
+5. **Liveness over CRSF:** in standard ELRS mode the TX module keeps repeating the last values even if the client program freezes, so silence is not enough. As already in drone-design.md, the client puts a counter on a spare channel that changes every frame. The CRSF adapter's link health records both "last valid frame" and "last time the counter changed"; the internal state's link-health type has room for both. *(Which channel: builder's call.)*
 
 ## 7. What goes in `drone-common`
 
