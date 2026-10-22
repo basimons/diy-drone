@@ -51,26 +51,46 @@ At the same time the drone must still be flyable with **standard ELRS/CRSF** (no
 
 ## 4. Framing
 
+### 4.0 Notation
+
+Message layouts use the packet diagram style of RFCs, following the [Augmented Packet Header Diagrams](https://www.ietf.org/archive/id/draft-mcquistin-augmented-ascii-diagrams-13.html) draft: a diagram, then a "where:" list giving each field's name, short name, size and constraints.
+
+- Each row of a diagram is 32 bits (4 bytes). Numbers along the top are bit positions.
+- A field drawn with `:` edges is **variable length**: it takes the remaining bytes (or the length given by an earlier field).
+- `(cont.)` means the field above continues on the next row.
+- **Byte order: all multi-byte numbers are little-endian** (low byte first). This deliberately differs from the RFC convention of big-endian ("network byte order").
+- `u8/u16/u32` = unsigned integers of 1/2/4 bytes, `i16` = signed 2-byte integer, `f32` = 4-byte IEEE 754 decimal number.
+
 ### 4.1 Envelope
 
-Every message, before framing:
+Every message, before COBS encoding:
 
 ```
-[flags 1B] [type 1B] [sequence 2B] [payload ...] [auth tag, later] [CRC-16 2B]
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|     Flags     |      Type     |            Sequence           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                       Payload (variable)                      :
+:                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                 Auth Tag (only if Flags bit 0)                :
+:                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|             CRC-16            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-| Field | Size | Meaning |
-|-------|------|---------|
-| flags | 1 B | bit 0 = "auth tag present". Bits 1–7 reserved, must be 0 for now. Until authentication exists, a receiver drops any frame with a non-zero flags byte. *(My call.)* |
-| type | 1 B | Message type, see §5. 256 values; more needed → new protocol version. |
-| sequence | 2 B | Counter per direction, +1 per message sent (resends too), wraps 65535 → 0. Used for loss detection, frozen-laptop detection, and later replay protection. Matching replies to requests uses the separate request ID (§5.0). |
-| payload | 0+ B | Depends on type. |
-| auth tag | 0 B now | Only present when flags bit 0 is set. Not defined yet. |
-| CRC-16 | 2 B | Over everything before it (flags through auth tag). |
+where:
 
-- **All multi-byte numbers are little-endian.**
-- **Maximum message size: 255 bytes** before COBS encoding (a deliberate choice: fixed buffers, small radio packets; raise in a later version if needed).
-- **CRC variant:** CRC-16/CCITT-FALSE (polynomial 0x1021, init 0xFFFF, no reflection, no final XOR). *(My call.)*
+- **Flags (F):** 1 byte. Bit 0 = "auth tag present". Bits 1–7 reserved. For now F == 0; until authentication exists, a receiver drops any frame with F != 0. *(My call.)*
+- **Type (T):** 1 byte. Message type, see §5. 256 values; if more are ever needed, that is a new protocol version.
+- **Sequence (Seq):** 2 bytes, u16. Counter per direction, +1 for every message sent (resends too), wraps 65535 → 0. Detects lost messages (gaps), a frozen sender (counter stops), stale messages (over WiFi: older than the newest seen → dropped), and later replay. It is **not** used to re-sort messages and **not** used to match replies (that is the Request ID, §5.0).
+- **Payload:** variable length, layout depends on T (§5).
+- **Auth Tag:** present only when F bit 0 is set. Length and algorithm defined by a future protocol version. Absent for now.
+- **CRC-16 (CRC):** 2 bytes. Over every byte before it (Flags through Auth Tag). Variant CRC-16/CCITT-FALSE: polynomial 0x1021, init 0xFFFF, no reflection, no final XOR. *(My call.)*
+
+Constraint: the whole envelope is at most **255 bytes** (deliberate: fixed buffers, small radio packets; raise in a later version if needed). With the 6 bytes of Flags, Type, Sequence and CRC, a payload is at most 249 bytes.
 
 ### 4.2 COBS
 
@@ -80,7 +100,9 @@ The envelope is COBS-encoded (Consistent Overhead Byte Stuffing) so it contains 
 - Message length is known from the delimiter position, so there is no length field.
 - Messages ≤ 254 bytes cost exactly 1 extra byte, plus the delimiter.
 
-**Receive rule:** decode the frame, check length ≤ 255, check CRC. Anything that fails is dropped silently (counted for link-quality stats).
+**Receive rule:** decode the frame, check length ≤ 255, check CRC, check Flags. Anything that fails is dropped silently (counted for link-quality stats).
+
+**Example size:** a Sticks message is 6 (envelope) + 8 (payload) + 2 (COBS + delimiter) = **16 bytes** on the wire.
 
 ## 5. Message types
 
@@ -96,91 +118,313 @@ The envelope is COBS-encoded (Consistent Overhead Byte Stuffing) so it contains 
 | `0x60–0x6F` | Data streams | `0x60` RequestOnce, `0x61` Subscribe, `0x62` StreamData |
 | `0x70–0x7F` | Logs | `0x70` ListLogs, `0x71` LogList, `0x72` ReadLog, `0x73` LogChunk |
 
-Direction: L→D = laptop to drone, D→L = drone to laptop.
+Direction: L→D = laptop to drone, D→L = drone to laptop. The diagrams below show the **payload** only; every message is wrapped in the envelope of §4.1.
 
 ### 5.0 Requests and answers *(my call)*
 
-- A **request** is any L→D message except Sticks and Ping: commands, SetSettings, GetSettings, Subscribe, RequestOnce, ListLogs, ReadLog.
-- Every request payload **starts with a request ID (u16)**, chosen by the laptop, before the fields listed below.
-- Every request gets **exactly one answer**: its data message (Settings, StreamData, LogList, LogChunk, which echo the request ID first), or a Reply. Errors (unknown stream/group/log ID, bad rate, refused) are always a Reply.
-- **Resending:** if no answer arrives within a timeout, the laptop resends the request with the **same request ID** (but a new sequence number). The drone remembers the last 16 request IDs it handled; a repeat is answered again from that memory without executing twice.
-- Unsolicited data (default streams, subscribed streams, Events) uses request ID 0. The laptop never uses 0 for a request.
+- A **request** is any L→D message except Sticks, Hello and Ping: commands, SetSettings, GetSettings, Subscribe, RequestOnce, ListLogs, ReadLog.
+- Every request payload **starts with a Request ID (u16)**: an idempotency key the laptop picks by counting up its requests (skipping 0). It is separate from the envelope Sequence.
+- Every request gets **exactly one answer**: its data message (Settings, StreamData, LogList, LogChunk, which echo the Request ID), or a Reply. Errors (unknown stream/group/log ID, bad rate, refused) are always a Reply.
+- **Resending:** if no answer arrives within a timeout, the laptop resends the request with the **same Request ID** (and a new Sequence). The drone remembers the last 16 Request IDs it handled; a repeat is answered again without executing twice.
+- Data sent without a request (default and subscribed streams) uses Request ID 0.
+- Request ID is 2 bytes (not 1) so that many requests in flight (e.g. pipelined ReadLog over WiFi) never wrap into IDs the drone still remembers.
+
+Example:
+
+```
+seq 100  Sticks
+seq 101  Flip, Request ID 7
+seq 102  Sticks
+...      (Reply lost)
+seq 150  Flip, Request ID 7   ← resend: new Sequence, same Request ID
+         drone: already did 7 → sends the Reply again, does not flip twice
+```
 
 ### 5.1 Connection
 
-| Type | Dir | Payload |
-|------|-----|---------|
-| Hello | L→D | protocol version u16, wanted options u32 |
-| HelloReply | D→L | protocol version u16, result u8, accepted options u32 |
-| Ping | either | timestamp u32 (sender's clock, ms) |
-| Pong | either | the timestamp from the Ping, echoed |
+**Hello** (`0x01`, L→D):
 
-- **Protocol version** starts at `1`.
-- **Options** are 32 on/off bits. Bit 0 = authentication. Bits 1–31 free.
-- **HelloReply result:** 0 = OK, 1 = version mismatch, 2 = option not supported.
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|        Protocol Version       |            Options            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            (cont.)            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Protocol Version (Ver):** 2 bytes, u16. Starts at 1.
+- **Options (Opt):** 4 bytes, u32. Options the laptop wants. Bit 0 = authentication. Bits 1–31 free. For now Opt == 0.
+
+**HelloReply** (`0x02`, D→L):
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|        Protocol Version       |     Result    |    Options    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                    (cont.)                    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Protocol Version (Ver):** 2 bytes, u16. The drone's version.
+- **Result (R):** 1 byte. One of: 0 = OK, 1 = version mismatch, 2 = option not supported.
+- **Options (Opt):** 4 bytes, u32. The options the drone accepted. When R == 2, the bits the laptop asked for that are missing here are the unsupported ones.
+
+**Ping** (`0x03`, either direction) and **Pong** (`0x04`, the answer):
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                           Timestamp                           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Timestamp (TS):** 4 bytes, u32. Sender's clock in ms. A Pong echoes the Ping's TS unchanged, so the sender can compute the round-trip time.
+
+Rules:
+
 - **Until a handshake succeeds, everything except Hello and Ping is ignored.**
-- **Hello and HelloReply carry sequence 0.** On a valid Hello the drone resets both counters; its HelloReply is its message 0. *(My call.)*
-- **A new Hello restarts the session at the protocol layer only:** sequence counters, subscriptions (back to the default set) and the remembered request IDs. It does **not** touch the internal state (sticks, armed state, settings). Sticks stop arriving while the laptop reconnects; that gap is handled by the normal link-loss logic like any other silence. *(My call.)*
+- **Hello and HelloReply carry Sequence 0.** On a valid Hello the drone resets both counters; its HelloReply is its message 0. *(My call.)*
+- **A new Hello restarts the session at the protocol layer only:** sequence counters, subscriptions (back to the default set) and the remembered Request IDs. It does **not** touch the internal state (sticks, armed state, settings). Sticks stop arriving while the laptop reconnects; that gap is handled by the normal link-loss logic like any other silence. *(My call.)*
 - When authentication is added, the handshake is also where both sides exchange fresh random numbers for the session (protection against replaying recorded messages). Not now.
 
 ### 5.2 Control
 
-| Type | Dir | Payload |
-|------|-----|---------|
-| Sticks | L→D | throttle u16, roll i16, pitch i16, yaw i16 (8 B) |
+**Sticks** (`0x10`, L→D):
 
-- Throttle 0 … 65535 (no centre). Roll/pitch/yaw −32768 … +32767, 0 = centred.
-- Roll = left/right, pitch = forward/back, yaw = turn on the spot.
-- Values are stick positions, not distances; the flight code decides what they mean.
-- **The laptop sends Sticks at a steady rate whenever connected, even if nothing changed.** This is also the laptop's heartbeat. Target 50 Hz; may be lowered if the link is too slow (see §8).
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            Throttle           |              Roll             |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|             Pitch             |              Yaw              |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Throttle (Thr):** 2 bytes, u16. 0 … 65535, no centre.
+- **Roll:** 2 bytes, i16. Left/right. −32768 … +32767, 0 = centred.
+- **Pitch:** 2 bytes, i16. Forward/back. Same range.
+- **Yaw:** 2 bytes, i16. Turn on the spot. Same range.
+
+Values are stick positions, not distances; the flight code decides what they mean.
+
+**The laptop sends Sticks at a steady rate whenever connected, even if nothing changed.** This is also the laptop's heartbeat. Target 50 Hz; may be lowered if the link is too slow (see §8).
 
 ### 5.3 Commands
 
-| Type | Dir | Payload |
-|------|-----|---------|
-| Arm, Disarm, TakeOff, Land, GoHome | L→D | none |
-| Flip | L→D | direction u16, duration_ms u16 |
+**Arm** (`0x20`), **Disarm** (`0x21`), **TakeOff** (`0x22`), **Land** (`0x23`), **GoHome** (`0x24`), all L→D:
 
-- **Flip direction:** 0 = forward, increasing clockwise seen from above, one full circle over 0 … 65535.
-- **Flip duration:** how long the flip takes, in ms (quick ≈ 300, slow ≈ 1500).
-- GoHome is reserved until GPS is fitted; until then the drone answers "not supported".
-- **Every command gets a Reply.** If the laptop gets none within a timeout it resends; the drone recognises a repeat by its sequence number and replies again without executing twice. *(Timeout value: builder's call.)*
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16, RID != 0. See §5.0.
+
+**Flip** (`0x25`, L→D):
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |           Direction           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            Duration           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
+- **Direction (Dir):** 2 bytes, u16. 0 = forward, increasing clockwise seen from above, one full circle over 0 … 65535.
+- **Duration (Dur):** 2 bytes, u16. How long the flip takes, in ms (quick ≈ 300, slow ≈ 1500).
+
+GoHome is reserved until GPS is fitted; until then the drone answers "not supported". Every command gets a Reply (§5.0).
 
 ### 5.4 Replies and events
 
-| Type | Dir | Payload |
-|------|-----|---------|
-| Reply | D→L | request ID u16, answers type u8, status u8, reason u16 |
-| Event | D→L | level u8, code u16, text (UTF-8, rest of payload) |
+**Reply** (`0x40`, D→L):
 
-- **Reply status:** 0 = OK, 1 = refused, 2 = unknown type, 3 = malformed, 4 = not supported, 5 = busy.
-- **Reason:** code whose meaning depends on the command (e.g. "too low", "battery low"). 0 = no reason given. Code list: builder's call, defined in `drone-common`.
-- **Event level:** 0 = debug, 1 = info, 2 = warning, 3 = error. Free text is where "any string from the drone" goes.
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |  Answers Type |     Status    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|             Reason            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16. The request this answers.
+- **Answers Type (AT):** 1 byte. The Type of that request.
+- **Status (St):** 1 byte. One of: 0 = OK, 1 = refused, 2 = unknown type, 3 = malformed, 4 = not supported, 5 = busy.
+- **Reason (Rsn):** 2 bytes, u16. Code whose meaning depends on the request (e.g. "too low", "battery low"). 0 = no reason given. Code list: builder's call, defined in `drone-common`.
+
+**Event** (`0x41`, D→L, never an answer, so no Request ID):
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|     Level     |              Code             |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Text (variable)                        :
+:                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Level (L):** 1 byte. One of: 0 = debug, 1 = info, 2 = warning, 3 = error.
+- **Code (C):** 2 bytes, u16. Machine-readable event code (builder's call), 0 = none.
+- **Text:** variable length, UTF-8, the rest of the payload (up to 246 bytes). Where "any string from the drone" goes.
 
 ### 5.5 Settings
 
 Settings are organised in **groups**. Each group has a 16-bit ID and a **fixed layout of values defined once in `drone-common`**, known to both sides. Layouts can branch: e.g. the estimator group starts with "which filter" and the rest depends on that choice. The layout is not described on the wire; the version handshake guarantees both sides agree.
 
-| Type | Dir | Payload |
-|------|-----|---------|
-| SetSettings | L→D | list of `[group ID u16][length u8][values]` |
-| GetSettings | L→D | list of group ID u16 |
-| Settings | D→L | list of `[group ID u16][length u8][values]` |
+A **Setting Group** (used inside SetSettings and Settings):
 
-- **SetSettings is all-or-nothing.** The drone checks every group first. Any problem → nothing changes, one Reply with the reason. All good → every change takes effect at the same moment, between two flight-loop runs. One Reply with OK.
-- The per-group length lets the receiver reject malformed messages cleanly.
-- Decimal values in settings are **f32** (4 B).
-- First groups (layouts: builder's call): PID gains (per axis), attitude estimator (filter choice + that filter's values).
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            Group ID           |     Length    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                       Values (variable)                       :
+:                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Group ID (GID):** 2 bytes, u16.
+- **Length (Len):** 1 byte. Number of bytes in Values; Len == size(Values). Lets the receiver reject malformed messages cleanly.
+- **Values:** Len bytes, layout per group. Decimal values are f32.
+
+**SetSettings** (`0x50`, L→D):
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                 Setting Group list (variable)                 :
+:                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
+- **Setting Group list:** variable length, one or more [Setting Group] back to back, until the end of the payload.
+
+**SetSettings is all-or-nothing.** The drone checks every group first. Any problem → nothing changes, one Reply with the reason. All good → every change takes effect at the same moment, between two flight-loop runs, and one Reply with OK.
+
+**GetSettings** (`0x51`, L→D):
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                    Group ID list (variable)                   :
+:                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
+- **Group ID list:** variable length, one or more u16 group IDs.
+
+**Settings** (`0x52`, D→L, the answer to GetSettings): same layout as SetSettings, with the Request ID of the GetSettings it answers. An unknown group ID gives a Reply instead.
+
+First groups (layouts: builder's call): PID gains (per axis), attitude estimator (filter choice + that filter's values).
 
 ### 5.6 Data streams
 
 Each kind of live data is a numbered **stream** (16-bit ID).
 
-| Type | Dir | Payload |
-|------|-----|---------|
-| Subscribe | L→D | stream ID u16, rate Hz u16 (0 = stop) |
-| RequestOnce | L→D | stream ID u16 |
-| StreamData | D→L | stream ID u16, stream data |
+**Subscribe** (`0x61`, L→D):
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |           Stream ID           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|              Rate             |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
+- **Stream ID (SID):** 2 bytes, u16.
+- **Rate:** 2 bytes, u16, in Hz. 0 = stop.
+
+Answered with a Reply (OK, or e.g. unknown stream / rate not possible).
+
+**RequestOnce** (`0x60`, L→D):
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |           Stream ID           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
+- **Stream ID (SID):** 2 bytes, u16.
+
+Answered with one StreamData carrying this Request ID (or a Reply on error).
+
+**StreamData** (`0x62`, D→L):
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |           Stream ID           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Data (variable)                        :
+:                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16. The RequestOnce it answers, or 0 for default/subscribed data.
+- **Stream ID (SID):** 2 bytes, u16.
+- **Data:** variable length, layout per stream.
+
+Rules:
 
 - After a successful handshake, the drone starts a **default set** (the glance screen) without being asked: status, battery, attitude, height, link quality, at a few Hz. *(Exact rates: builder's call.)*
 - Streams can be subscribed, changed and stopped during flight.
@@ -202,15 +446,87 @@ First streams (field layouts: builder's call, units as given):
 
 The drone records detailed data (sensors, PID internals, motor outputs) to its SD card. The laptop can fetch it through the protocol: slowly over radio, quickly over WiFi.
 
-| Type | Dir | Payload |
-|------|-----|---------|
-| ListLogs | L→D | none |
-| LogList | D→L | list of `[log ID u16][size u32]` |
-| ReadLog | L→D | log ID u16, start offset u32 |
-| LogChunk | D→L | log ID u16, offset u32, data (up to what fits in 255 B) |
+**ListLogs** (`0x70`, L→D): payload is only a Request ID, same layout as the simple commands in §5.3.
+
+**LogList** (`0x71`, D→L):
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                   Log Entry list (variable)                   :
+:                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16. The ListLogs it answers.
+- **Log Entry list:** variable length, zero or more [Log Entry]. If they don't all fit in one message, the drone sends several LogList messages with the same RID. *(My call.)*
+
+A **Log Entry**:
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|             Log ID            |              Size             |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            (cont.)            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Log ID (LID):** 2 bytes, u16.
+- **Size:** 4 bytes, u32, in bytes.
+
+**ReadLog** (`0x72`, L→D):
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |             Log ID            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                             Offset                            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
+- **Log ID (LID):** 2 bytes, u16.
+- **Offset (Off):** 4 bytes, u32. Byte position to start reading from.
+
+**LogChunk** (`0x73`, D→L):
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |             Log ID            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                             Offset                            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Data (variable)                        :
+:                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16. The ReadLog it answers.
+- **Log ID (LID):** 2 bytes, u16.
+- **Offset (Off):** 4 bytes, u32. Same as requested.
+- **Data:** variable length, up to 241 bytes (what fits in 255).
+
+Rules:
 
 - The laptop asks by **position**, so a lost chunk is just asked for again; the drone keeps no download state.
-- An offset at/after the end returns a LogChunk with no data.
+- An offset at/after the end returns a LogChunk with no Data.
 - What goes into a log and its file format: out of scope here.
 
 ## 6. Behaviour rules the protocol relies on
@@ -233,6 +549,8 @@ The drone records detailed data (sensors, PID internals, motor outputs) to its S
 ## 8. Open risks
 
 - **Airport throughput is unknown.** 50 Hz Sticks ≈ 16 B × 50 = 800 B/s plus streams. Measure on the bench. Fallbacks: send Sticks at 25 Hz, fewer streams in flight, 12-bit axes in a new version.
+
+- **Possible later: separate radio and WiFi modes**, chosen in the handshake (an option bit), so WiFi can use bigger messages and fields (e.g. message size, Request ID width) while radio stays small. Not now: one format for all links.
 
 ## 9. Left to the builder
 
