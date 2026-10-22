@@ -1,0 +1,8 @@
+# Cross-compiling the flight code for the Pi 5 (64-bit ARM Linux) from the laptop:
+#   rustup target add aarch64-unknown-linux-gnu
+#   cargo build -p drone-fc --release --target aarch64-unknown-linux-gnu
+# This needs an ARM linker on the laptop (e.g. the `gcc-aarch64-linux-gnu` package).
+# Easier alternative with no local linker setup: `cargo install cross` then
+#   cross build -p drone-fc --release --target aarch64-unknown-linux-gnu
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"

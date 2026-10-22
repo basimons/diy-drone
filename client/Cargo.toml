@@ -1,0 +1,14 @@
+[package]
+name = "drone-client"
+description = "Ground client: reads the gamepad, encodes CRSF, sends it to the ELRS TX module over USB serial"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+drone-common = { workspace = true, features = ["std"] }
+anyhow.workspace = true
+# Cross-platform serial port (Windows/macOS/Linux) for the FT232RL USB-serial adapter.
+serialport = "4"
+# Cross-platform gamepad input (PS5 controller).
+gilrs = "0.11"

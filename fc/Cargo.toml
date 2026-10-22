@@ -1,0 +1,21 @@
+[package]
+name = "drone-fc"
+description = "Flight code running on the drone (Raspberry Pi 5, or any Linux board with SPI/I2C/UART)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+drone-common.workspace = true
+anyhow.workspace = true
+# Hardware-independent driver interfaces (SPI, I2C, GPIO). Sensor drivers are
+# written against these, so they don't care which board they run on.
+embedded-hal = "1"
+
+# Only pulled in when building for Linux, so the workspace still builds on
+# Windows/macOS. This talks to the standard Linux device files
+# (/dev/spidev*, /dev/i2c-*, /dev/gpiochip*), not Pi-specific registers.
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-embedded-hal = { version = "0.4", default-features = false, features = ["spi", "i2c", "gpio_cdev"] }
+# Real-time setup: SCHED_FIFO priority, mlockall, pinning to the isolated core.
+libc = "0.2"
