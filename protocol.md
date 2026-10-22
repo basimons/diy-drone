@@ -83,12 +83,12 @@ Every message, before COBS encoding:
 
 where:
 
-- **Flags (F):** 1 byte. Bit 0 = "auth tag present". Bits 1–7 reserved. For now F == 0; until authentication exists, a receiver drops any frame with F != 0. *(My call.)*
+- **Flags (F):** 1 byte. Bit 0 = "auth tag present". Bits 1–7 reserved. For now F == 0; until authentication exists, a receiver drops any frame with F != 0.
 - **Type (T):** 1 byte. Message type, see §5. 256 values; if more are ever needed, that is a new protocol version.
 - **Sequence (Seq):** 2 bytes, u16. Counter per direction, +1 for every message sent (resends too), wraps 65535 → 0. Detects lost messages (gaps), a frozen sender (counter stops), stale messages (over WiFi: older than the newest seen → dropped), and later replay. It is **not** used to re-sort messages and **not** used to match replies (that is the Request ID, §5.0).
 - **Payload:** variable length, layout depends on T (§5).
 - **Auth Tag:** present only when F bit 0 is set. Length and algorithm defined by a future protocol version. Absent for now.
-- **CRC-16 (CRC):** 2 bytes. Over every byte before it (Flags through Auth Tag). Variant CRC-16/CCITT-FALSE: polynomial 0x1021, init 0xFFFF, no reflection, no final XOR. *(My call.)*
+- **CRC-16 (CRC):** 2 bytes. Over every byte before it (Flags through Auth Tag). Variant CRC-16/CCITT-FALSE: polynomial 0x1021, init 0xFFFF, no reflection, no final XOR.
 
 Constraint: the whole envelope is at most **255 bytes** (deliberate: fixed buffers, small radio packets; raise in a later version if needed). With the 6 bytes of Flags, Type, Sequence and CRC, a payload is at most 249 bytes.
 
@@ -120,7 +120,7 @@ The envelope is COBS-encoded (Consistent Overhead Byte Stuffing) so it contains 
 
 Direction: C→D = client (laptop) to drone, D→C = drone to client. The diagrams below show the **payload** only; every message is wrapped in the envelope of §4.1.
 
-### 5.0 Requests and answers *(my call)*
+### 5.0 Requests and answers
 
 - A **request** is any C→D message except Sticks, Hello and Ping: commands, SetSettings, GetSettings, Subscribe, RequestOnce, ListLogs, ReadLog.
 - Every request payload **starts with a Request ID (u16)**: an idempotency key the client picks by counting up its requests (skipping 0). It is separate from the envelope Sequence.
@@ -194,8 +194,8 @@ where:
 Rules:
 
 - **Until a handshake succeeds, everything except Hello and Ping is ignored.**
-- **Hello and HelloReply carry Sequence 0.** On a valid Hello the drone resets both counters; its HelloReply is its message 0. *(My call.)*
-- **A new Hello restarts the session at the protocol layer only:** sequence counters, subscriptions (back to the default set) and the remembered Request IDs. It does **not** touch the internal state (sticks, armed state, settings). Sticks stop arriving while the client reconnects; that gap is handled by the normal link-loss logic like any other silence. *(My call.)*
+- **Hello and HelloReply carry Sequence 0.** On a valid Hello the drone resets both counters; its HelloReply is its message 0.
+- **A new Hello restarts the session at the protocol layer only:** sequence counters, subscriptions (back to the default set) and the remembered Request IDs. It does **not** touch the internal state (sticks, armed state, settings). Sticks stop arriving while the client reconnects; that gap is handled by the normal link-loss logic like any other silence.
 - When authentication is added, the handshake is also where both sides exchange fresh random numbers for the session (protection against replaying recorded messages). Not now.
 
 ### 5.2 Control
@@ -464,7 +464,7 @@ The drone records detailed data (sensors, PID internals, motor outputs) to its S
 where:
 
 - **Request ID (RID):** 2 bytes, u16. The ListLogs it answers.
-- **Log Entry list:** variable length, zero or more [Log Entry]. If they don't all fit in one message, the drone sends several LogList messages with the same RID. *(My call.)*
+- **Log Entry list:** variable length, zero or more [Log Entry]. If they don't all fit in one message, the drone sends several LogList messages with the same RID.
 
 A **Log Entry**:
 
