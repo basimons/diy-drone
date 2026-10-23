@@ -1,6 +1,4 @@
-//! CRC-16/CCITT-FALSE, the checksum at the end of every envelope (protocol.md §4.1).
-
-/// CRC-16/CCITT-FALSE: polynomial 0x1021, start value 0xFFFF, no bit reflection, no final XOR.
+/// CRC-16/CCITT-FALSE (protocol.md §4.1): polynomial 0x1021, start 0xFFFF, no reflection, no final XOR.
 pub fn crc16(data: &[u8]) -> u16 {
     let mut crc: u16 = 0xFFFF;
     for &byte in data {

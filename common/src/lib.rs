@@ -1,10 +1,7 @@
-//! Shared code for the ground client and the flight controller.
-//!
-//! `no_std` (no operating system or heap needed), so the same code runs on the
-//! laptop, on the Pi, and on a microcontroller if the project ever moves to one.
+//! Shared by client and flight controller. `no_std` so it also runs without an OS or heap.
 #![no_std]
 
-// Tests may use the standard library (Vec, formatting) even though the crate itself does not.
+// Tests may use std (Vec); the crate itself stays no_std.
 #[cfg(any(feature = "std", test))]
 extern crate std;
 
