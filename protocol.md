@@ -47,7 +47,7 @@ At the same time the drone must still be flyable with **standard ELRS/CRSF** (no
 - The internal state can hold more than CRSF can express (settings, flips with parameters, log requests). Over CRSF those simply never arrive; that is fine.
 - **Link health is part of the state**: each adapter records when the last valid message arrived, so link-loss handling is identical whatever protocol is in use.
 - **One active source at a time**, chosen at startup.
-- Over CRSF, simple commands can be mapped to switch channels (e.g. "channel 8 high" → flip). The exact mapping is left to the builder (§9).
+- Over CRSF, simple commands can be mapped to switch channels (e.g. "channel 8 high" → flip). The exact mapping is still to be decided (§9).
 
 ## 4. Framing
 
@@ -278,7 +278,7 @@ where:
 - **Request ID (RID):** 2 bytes, u16. The request this answers.
 - **Answers Type (AT):** 1 byte. The Type of that request.
 - **Status (St):** 1 byte. One of: 0 = OK, 1 = refused, 2 = unknown type, 3 = malformed, 4 = not supported, 5 = busy.
-- **Reason (Rsn):** 2 bytes, u16. Code whose meaning depends on the request (e.g. "too low", "battery low"). 0 = no reason given. Code list: builder's call, defined in `drone-common`.
+- **Reason (Rsn):** 2 bytes, u16. Code whose meaning depends on the request (e.g. "too low", "battery low"). 0 = no reason given. Code list: defined in `drone-common`.
 
 **Event** (`0x41`, D→C, never an answer, so no Request ID):
 
@@ -296,7 +296,7 @@ where:
 where:
 
 - **Level (L):** 1 byte. One of: 0 = debug, 1 = info, 2 = warning, 3 = error.
-- **Code (C):** 2 bytes, u16. Machine-readable event code (builder's call), 0 = none.
+- **Code (C):** 2 bytes, u16. Machine-readable event code, defined in `drone-common`. 0 = none.
 - **Text:** variable length, UTF-8, the rest of the payload (up to 246 bytes). Where "any string from the drone" goes.
 
 ### 5.5 Settings
@@ -362,7 +362,7 @@ where:
 
 **Settings** (`0x52`, D→C, the answer to GetSettings): same layout as SetSettings, with the Request ID of the GetSettings it answers. An unknown group ID gives a Reply instead.
 
-First groups (layouts: builder's call): PID gains (per axis), attitude estimator (filter choice + that filter's values).
+First groups (layouts defined in `drone-common`): PID gains (per axis), attitude estimator (filter choice + that filter's values).
 
 ### 5.6 Data streams
 
@@ -426,11 +426,11 @@ where:
 
 Rules:
 
-- After a successful handshake, the drone starts a **default set** (the glance screen) without being asked: status, battery, attitude, height, link quality, at a few Hz. *(Exact rates: builder's call.)*
+- After a successful handshake, the drone starts a **default set** (the glance screen) without being asked: status, battery, attitude, height, link quality, at a few Hz. Exact rates: to be decided.
 - Streams can be subscribed, changed and stopped during flight.
 - Stream data uses **fixed-point whole numbers** (exact, small), e.g. mV, centidegrees, cm.
 
-First streams (field layouts: builder's call, units as given):
+First streams (field layouts defined in `drone-common`, units as given):
 
 | ID | Stream | Units |
 |----|--------|-------|
@@ -535,7 +535,7 @@ Rules:
 2. Each side's sequence counter starts at 0 at handshake and increments per sent message.
 3. A Reply refers to the request's request ID and type.
 4. **Liveness:** the client's Sticks stream is its heartbeat; the drone's default status stream is the drone's heartbeat. How long a silence means "link lost" is drone/client logic (the design doc's 250 ms).
-5. **Liveness over CRSF:** in standard ELRS mode the TX module keeps repeating the last values even if the client program freezes, so silence is not enough. As already in drone-design.md, the client puts a counter on a spare channel that changes every frame. The CRSF adapter's link health records both "last valid frame" and "last time the counter changed"; the internal state's link-health type has room for both. *(Which channel: builder's call.)*
+5. **Liveness over CRSF:** in standard ELRS mode the TX module keeps repeating the last values even if the client program freezes, so silence is not enough. As already in drone-design.md, the client puts a counter on a spare channel that changes every frame. The CRSF adapter's link health records both "last valid frame" and "last time the counter changed"; the internal state's link-health type has room for both. Which channel: to be decided.
 
 ## 7. What goes in `drone-common`
 
@@ -552,7 +552,7 @@ Rules:
 
 - **Possible later: separate radio and WiFi modes**, chosen in the handshake (an option bit), so WiFi can use bigger messages and fields (e.g. message size, Request ID width) while radio stays small. Not now: one format for all links.
 
-## 9. Left to the builder
+## 9. Still to decide
 
 - CRSF channel → internal state mapping (which AUX channel is arm, flip, etc.).
 - Exact stream field layouts and settings group layouts beyond what is listed.
