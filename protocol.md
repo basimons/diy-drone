@@ -335,15 +335,15 @@ where:
 
 ### 5.5 Settings
 
-Settings are organised in **groups**. Each group has a 16-bit ID and a **fixed layout of values defined once in `drone-common`**, known to both sides. Layouts can branch: e.g. the estimator group starts with "which filter" and the rest depends on that choice. The layout is not described on the wire; the version handshake guarantees both sides agree.
+Settings are organised in **groups**. Each group has a 1-byte ID (up to 255 groups; if that ever runs out, a new protocol version widens it) and a **fixed layout of values defined once in `drone-common`**, known to both sides. Layouts can branch: e.g. the estimator group starts with "which filter" and the rest depends on that choice. The layout is not described on the wire; the version handshake guarantees both sides agree.
 
 A **Setting Group** (used inside SetSettings and Settings):
 
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|            Group ID           |     Length    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    Group ID   |     Length    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                       Values (variable)                       :
 :                                                               |
@@ -352,7 +352,7 @@ A **Setting Group** (used inside SetSettings and Settings):
 
 where:
 
-- **Group ID (GID):** 2 bytes, u16.
+- **Group ID (GID):** 1 byte, u8. 0 is never used.
 - **Length (Len):** 1 byte. Number of bytes in Values; Len == size(Values). Lets the receiver reject malformed messages cleanly.
 - **Values:** Len bytes, layout per group. Decimal values are f32.
 
@@ -392,7 +392,7 @@ where:
 where:
 
 - **Idempotency Key (IK):** 2 bytes, u16, IK != 0.
-- **Group ID list:** variable length, one or more u16 group IDs.
+- **Group ID list:** variable length, one or more u8 group IDs.
 
 **Settings** (`0x52`, D→C, the answer to GetSettings):
 
