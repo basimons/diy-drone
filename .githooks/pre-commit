@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Blocks the commit if formatting, lints or tests fail.
+# Enable once per clone with: git config core.hooksPath .githooks
+# Fix formatting with `cargo fmt --all`; skip the hook in an emergency with `git commit --no-verify`.
+exec "$(git rev-parse --show-toplevel)/scripts/check.sh"

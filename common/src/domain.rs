@@ -14,7 +14,7 @@ pub struct RcChannels(pub [u16; CHANNEL_COUNT]);
 
 impl Default for RcChannels {
     fn default() -> Self {
-        Self([CHANNEL_MID; CHANNEL_COUNT])
+        return Self([CHANNEL_MID; CHANNEL_COUNT]);
     }
 }
 

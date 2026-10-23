@@ -10,3 +10,9 @@ license = "MIT"
 [workspace.dependencies]
 drone-common = { path = "common" }
 anyhow = "1"
+
+# Lint settings shared by every crate (each crate opts in with `[lints] workspace = true`).
+[workspace.lints.clippy]
+# House style: every function and closure ends with an explicit `return`.
+implicit_return = "warn"
+needless_return = "allow"

@@ -13,5 +13,5 @@ pub mod protocol;
 pub mod wire;
 
 pub fn hello() -> &'static str {
-    "hello from drone-common"
+    return "hello from drone-common";
 }

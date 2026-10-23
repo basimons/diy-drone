@@ -12,3 +12,6 @@ anyhow.workspace = true
 serialport = "4"
 # Cross-platform gamepad input (PS5 controller).
 gilrs = "0.11"
+
+[lints]
+workspace = true
