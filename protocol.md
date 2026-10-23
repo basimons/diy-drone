@@ -148,15 +148,15 @@ seq 150  Flip, Request ID 7   ← resend: new Sequence, same Request ID
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Protocol Version       |            Options            |
+|    Version    |                    Options                    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|            (cont.)            |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    (cont.)    |
++-+-+-+-+-+-+-+-+
 ```
 
 where:
 
-- **Protocol Version (Ver):** 2 bytes, u16. Starts at 1.
+- **Version (Ver):** 1 byte, u8. Protocol version, starts at 1.
 - **Options (Opt):** 4 bytes, u32. Options the client wants. Bit 0 = authentication. Bits 1–31 free. For now Opt == 0.
 
 **HelloReply** (`0x02`, D→C):
@@ -165,15 +165,15 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Protocol Version       |     Result    |    Options    |
+|    Version    |     Result    |            Options            |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                    (cont.)                    |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            (cont.)            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 where:
 
-- **Protocol Version (Ver):** 2 bytes, u16. The drone's version.
+- **Version (Ver):** 1 byte, u8. The drone's protocol version.
 - **Result (R):** 1 byte. One of: 0 = OK, 1 = version mismatch, 2 = option not supported.
 - **Options (Opt):** 4 bytes, u32. The options the drone accepted. When R == 2, the bits the client asked for that are missing here are the unsupported ones.
 

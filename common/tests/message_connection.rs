@@ -20,16 +20,16 @@ fn check(message: Message, message_type: MessageType, payload: &[u8]) {
 #[test]
 fn hello() {
     let hello = Message::Hello(Hello {
-        protocol_version: 0x0102,
+        protocol_version: 7,
         options: 0x0A0B0C0D,
     });
-    check(hello, MessageType::Hello, &[0x02, 0x01, 0x0D, 0x0C, 0x0B, 0x0A]);
+    check(hello, MessageType::Hello, &[0x07, 0x0D, 0x0C, 0x0B, 0x0A]);
 }
 
 #[test]
 fn hello_with_options_still_decodes() {
     // The drone answers unsupported options with HelloReply "option not supported", so it must see them.
-    let decoded = Message::decode(&envelope(MessageType::Hello, &[1, 0, 0xFF, 0xFF, 0xFF, 0xFF]));
+    let decoded = Message::decode(&envelope(MessageType::Hello, &[1, 0xFF, 0xFF, 0xFF, 0xFF]));
     assert_eq!(
         decoded,
         Ok(Message::Hello(Hello {
@@ -46,17 +46,13 @@ fn hello_reply() {
         result: HelloResult::OptionNotSupported,
         options: 0x0000_0002,
     });
-    check(
-        reply,
-        MessageType::HelloReply,
-        &[0x01, 0x00, 0x02, 0x02, 0x00, 0x00, 0x00],
-    );
+    check(reply, MessageType::HelloReply, &[0x01, 0x02, 0x02, 0x00, 0x00, 0x00]);
 }
 
 #[test]
 fn hello_with_other_version_still_decodes() {
     // The drone answers with HelloReply "version mismatch", so it must see the version.
-    let decoded = Message::decode(&envelope(MessageType::Hello, &[2, 0, 0, 0, 0, 0]));
+    let decoded = Message::decode(&envelope(MessageType::Hello, &[2, 0, 0, 0, 0]));
     assert_eq!(
         decoded,
         Ok(Message::Hello(Hello {
@@ -75,8 +71,8 @@ fn hello_and_hello_reply_always_use_sequence_0() {
     });
     assert_eq!(hello.encode(9).sequence(), 0);
     for (message_type, payload) in [
-        (MessageType::Hello, vec![1, 0, 0, 0, 0, 0]),
-        (MessageType::HelloReply, vec![1, 0, 0, 0, 0, 0, 0]),
+        (MessageType::Hello, vec![1, 0, 0, 0, 0]),
+        (MessageType::HelloReply, vec![1, 0, 0, 0, 0, 0]),
     ] {
         let decoded = Message::decode(&Envelope::new(message_type, 7, &payload).unwrap());
         assert_eq!(
@@ -99,14 +95,14 @@ fn hello_reply_every_result() {
             result,
             options: 0,
         });
-        check(reply, MessageType::HelloReply, &[1, 0, byte, 0, 0, 0, 0]);
+        check(reply, MessageType::HelloReply, &[1, byte, 0, 0, 0, 0]);
     }
 }
 
 #[test]
 fn hello_reply_rejects_unknown_result() {
     for byte in [3, 0xFF] {
-        let decoded = Message::decode(&envelope(MessageType::HelloReply, &[1, 0, byte, 0, 0, 0, 0]));
+        let decoded = Message::decode(&envelope(MessageType::HelloReply, &[1, byte, 0, 0, 0, 0]));
         assert_eq!(decoded, Err(DecodeError::InvalidValue), "result {byte}");
     }
 }
@@ -137,8 +133,8 @@ fn pong() {
 #[test]
 fn rejects_wrong_payload_length() {
     let cases: [(MessageType, usize); 4] = [
-        (MessageType::Hello, 6),
-        (MessageType::HelloReply, 7),
+        (MessageType::Hello, 5),
+        (MessageType::HelloReply, 6),
         (MessageType::Ping, 4),
         (MessageType::Pong, 12),
     ];

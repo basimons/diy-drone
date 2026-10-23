@@ -12,13 +12,13 @@ pub enum DecodeError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hello {
-    pub protocol_version: u16,
+    pub protocol_version: u8,
     pub options: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HelloReply {
-    pub protocol_version: u16,
+    pub protocol_version: u8,
     pub result: HelloResult,
     pub options: u32,
 }
@@ -58,11 +58,11 @@ impl Message {
         let mut w = Writer::new();
         match self {
             Message::Hello(m) => {
-                w.u16(m.protocol_version);
+                w.u8(m.protocol_version);
                 w.u32(m.options);
             }
             Message::HelloReply(m) => {
-                w.u16(m.protocol_version);
+                w.u8(m.protocol_version);
                 w.u8(u8::from(m.result));
                 w.u32(m.options);
             }
@@ -87,11 +87,11 @@ impl Message {
         };
         let message = match envelope.message_type() {
             MessageType::Hello => Message::Hello(Hello {
-                protocol_version: r.u16()?,
+                protocol_version: r.u8()?,
                 options: r.u32()?,
             }),
             MessageType::HelloReply => Message::HelloReply(HelloReply {
-                protocol_version: r.u16()?,
+                protocol_version: r.u8()?,
                 result: HelloResult::try_from(r.u8()?).map_err(|_| return DecodeError::InvalidValue)?,
                 options: r.u32()?,
             }),
@@ -131,10 +131,6 @@ impl Reader<'_> {
         return Ok(self.take::<1>()?[0]);
     }
 
-    fn u16(&mut self) -> Result<u16, DecodeError> {
-        return Ok(u16::from_le_bytes(self.take()?));
-    }
-
     fn u32(&mut self) -> Result<u32, DecodeError> {
         return Ok(u32::from_le_bytes(self.take()?));
     }
@@ -161,10 +157,6 @@ impl Writer {
 
     fn u8(&mut self, value: u8) {
         self.put(&[value]);
-    }
-
-    fn u16(&mut self, value: u16) {
-        self.put(&value.to_le_bytes());
     }
 
     fn u32(&mut self, value: u32) {
