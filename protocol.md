@@ -418,7 +418,7 @@ First groups (layouts defined in `drone-common`): PID gains (per axis), attitude
 
 ### 5.6 Data streams
 
-Each kind of live data is a numbered **stream** (16-bit ID).
+Each kind of live data is a numbered **stream** (1-byte ID, 0 never used; up to 255 streams).
 
 **Subscribe** (`0x61`, C→D):
 
@@ -426,16 +426,16 @@ Each kind of live data is a numbered **stream** (16-bit ID).
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |           Stream ID           |
+|        Idempotency Key        |   Stream ID   |      Rate     |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|              Rate             |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    (cont.)    |
++-+-+-+-+-+-+-+-+
 ```
 
 where:
 
 - **Idempotency Key (IK):** 2 bytes, u16, IK != 0.
-- **Stream ID (SID):** 2 bytes, u16.
+- **Stream ID (SID):** 1 byte, u8.
 - **Rate:** 2 bytes, u16, in Hz. 0 = stop.
 
 Answered with a Reply (OK, or e.g. unknown stream / rate not possible).
@@ -445,15 +445,15 @@ Answered with a Reply (OK, or e.g. unknown stream / rate not possible).
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |           Stream ID           |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|        Idempotency Key        |   Stream ID   |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 where:
 
 - **Idempotency Key (IK):** 2 bytes, u16, IK != 0.
-- **Stream ID (SID):** 2 bytes, u16.
+- **Stream ID (SID):** 1 byte, u8.
 
 Answered with one StreamData carrying this Idempotency Key (or a Reply on error).
 
@@ -462,8 +462,8 @@ Answered with one StreamData carrying this Idempotency Key (or a Reply on error)
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |           Stream ID           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|        Idempotency Key        |   Stream ID   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                        Data (variable)                        :
 :                                                               |
@@ -473,7 +473,7 @@ Answered with one StreamData carrying this Idempotency Key (or a Reply on error)
 where:
 
 - **Idempotency Key (IK):** 2 bytes, u16. The RequestOnce it answers, or 0 for default/subscribed data.
-- **Stream ID (SID):** 2 bytes, u16.
+- **Stream ID (SID):** 1 byte, u8.
 - **Data:** variable length, layout per stream.
 
 Rules:
@@ -536,15 +536,15 @@ A **Log Entry**:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|             Log ID            |              Size             |
+|     Log ID    |                      Size                     |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|            (cont.)            |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    (cont.)    |
++-+-+-+-+-+-+-+-+
 ```
 
 where:
 
-- **Log ID (LID):** 2 bytes, u16.
+- **Log ID (LID):** 1 byte, u8.
 - **Size:** 4 bytes, u32, in bytes.
 
 **ReadLog** (`0x72`, C→D):
@@ -553,16 +553,16 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |             Log ID            |
+|        Idempotency Key        |     Log ID    |     Offset    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                             Offset                            |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                    (cont.)                    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 where:
 
 - **Idempotency Key (IK):** 2 bytes, u16, IK != 0.
-- **Log ID (LID):** 2 bytes, u16.
+- **Log ID (LID):** 1 byte, u8.
 - **Offset (Off):** 4 bytes, u32. Byte position to start reading from.
 
 **LogChunk** (`0x73`, D→C):
@@ -571,9 +571,9 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |             Log ID            |
+|        Idempotency Key        |     Log ID    |     Offset    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                             Offset                            |
+|                    (cont.)                    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                        Data (variable)                        :
 :                                                               |
@@ -583,12 +583,13 @@ where:
 where:
 
 - **Idempotency Key (IK):** 2 bytes, u16. The ReadLog it answers.
-- **Log ID (LID):** 2 bytes, u16.
+- **Log ID (LID):** 1 byte, u8.
 - **Offset (Off):** 4 bytes, u32. Same as requested.
-- **Data:** variable length, up to 241 bytes (what fits in 255).
+- **Data:** variable length, up to 242 bytes (what fits in 255).
 
 Rules:
 
+- **Log IDs are 1 byte**, so the drone lists at most 255 logs (the newest ones; 0 is never used). Older logs stay on the SD card and can be fetched over WiFi as files.
 - The client asks by **position**, so a lost chunk is just asked for again; the drone keeps no download state.
 - An offset at/after the end returns a LogChunk with no Data.
 - What goes into a log and its file format: out of scope here.
