@@ -360,7 +360,25 @@ where:
 - **Request ID (RID):** 2 bytes, u16, RID != 0.
 - **Group ID list:** variable length, one or more u16 group IDs.
 
-**Settings** (`0x52`, D→C, the answer to GetSettings): same layout as SetSettings, with the Request ID of the GetSettings it answers. An unknown group ID gives a Reply instead.
+**Settings** (`0x52`, D→C, the answer to GetSettings):
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                 Setting Group list (variable)                 :
+:                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16. The GetSettings it answers.
+- **Setting Group list:** variable length, one [Setting Group] per requested group ID, in the requested order.
+
+An unknown group ID gives a Reply instead.
 
 First groups (layouts defined in `drone-common`): PID gains (per axis), attitude estimator (filter choice + that filter's values).
 
@@ -446,7 +464,19 @@ First streams (field layouts defined in `drone-common`, units as given):
 
 The drone records detailed data (sensors, PID internals, motor outputs) to its SD card. The client can fetch it through the protocol: slowly over radio, quickly over WiFi.
 
-**ListLogs** (`0x70`, C→D): payload is only a Request ID, same layout as the simple commands in §5.3.
+**ListLogs** (`0x70`, C→D):
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
 
 **LogList** (`0x71`, D→C):
 
