@@ -189,7 +189,7 @@ where:
 
 where:
 
-- **Timestamp (TS):** 4 bytes, u32. Sender's clock in ms when the Ping was sent.
+- **Timestamp (TS):** 4 bytes, u32. Sender's session clock (§5.1, "Session clock") in µs when the Ping was sent.
 
 **Pong** (`0x04`, the answer to a Ping):
 
@@ -208,15 +208,22 @@ where:
 where:
 
 - **Ping Time (T1):** 4 bytes, u32. The Ping's Timestamp, echoed unchanged.
-- **Receive Time (T2):** 4 bytes, u32. Answerer's clock in ms when the Ping arrived.
-- **Send Time (T3):** 4 bytes, u32. Answerer's clock in ms when the Pong was sent.
+- **Receive Time (T2):** 4 bytes, u32. Answerer's session clock in µs when the Ping arrived.
+- **Send Time (T3):** 4 bytes, u32. Answerer's session clock in µs when the Pong was sent.
 
-With T4 = the Ping sender's clock when the Pong arrives (NTP-style):
+With T4 = the Ping sender's session clock when the Pong arrives (NTP-style):
 
 - round-trip delay = (T4 − T1) − (T3 − T2)
 - clock offset (answerer − sender) ≈ ((T2 − T1) + (T3 − T4)) / 2, assuming the delay is the same both ways
 
-The offset lets drone logs and client logs be lined up afterwards. All times wrap after ~49 days; differences are computed with wrapping arithmetic.
+The offset lets drone logs and client logs be lined up afterwards.
+
+**Session clock:** every timestamp (point in time) in the protocol is a u32 count of **microseconds since the start of the session**, not wall-clock or UTC time. Durations, like the Flip duration, keep their own units.
+
+- the client's session clock starts at 0 when it sends the Hello;
+- the drone's session clock starts at 0 when it receives that Hello.
+
+So both clocks start at almost the same moment and the offset between them is roughly the one-way delay. A new Hello restarts both clocks. A u32 of µs wraps after about 71 minutes; all differences are computed with wrapping arithmetic, which stays correct as long as the two times are less than ~35 minutes apart.
 
 Rules:
 
