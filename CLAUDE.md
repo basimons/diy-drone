@@ -18,7 +18,8 @@ Rust lives in `~/.cargo/bin`, which may not be on `PATH` in a fresh shell (`scri
 ## Code style
 
 - **Always an explicit `return`**, in every function and closure, including the last expression
-  (`return Ok(());`, `|x| return x + 1`). Enforced by `clippy::implicit_return`.
+  (`return Ok(());`, `|x| return x + 1`). Enforced by `clippy::implicit_return`. `if`/`match` used as a value
+  (`let x = if a { 1 } else { 2 };`) stays idiomatic Rust.
 - Few comments: only ones that add something the code doesn't already say (why, units, spec references,
   non-obvious edge cases). No comments restating the name or signature.
 - Enum variant comments go on the same line as the variant (`ZeroByte, // encoded data contained 0x00`).

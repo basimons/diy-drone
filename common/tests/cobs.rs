@@ -103,6 +103,19 @@ fn max_encoded_len_fits_a_full_envelope() {
 }
 
 #[test]
+fn max_encoded_len_is_enough_as_buffer_size() {
+    for input in [
+        run(0x01, 255),
+        cat(&[&run(0x01, 254), &[0x00]]),
+        vec![0x00; 255],
+        vec![],
+    ] {
+        let mut out = vec![0u8; max_encoded_len(input.len())];
+        assert!(encode(&input, &mut out).is_ok(), "{} bytes", input.len());
+    }
+}
+
+#[test]
 fn encode_rejects_too_small_output() {
     let mut out = [0u8; 4];
     assert_eq!(
