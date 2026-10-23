@@ -8,19 +8,25 @@ pub struct UnknownCode(pub u8);
 /// `with Unknown`: adds an `Unknown(byte)` variant and an infallible `From<u8>`, for codes the drone must still
 /// see to answer them.
 macro_rules! wire_enum {
-    (@decode $name:ident) => {
+    (@decode $name:ident { $($variant:ident = $value:literal,)* }) => {
         impl TryFrom<u8> for $name {
             type Error = UnknownCode;
 
             fn try_from(byte: u8) -> Result<Self, UnknownCode> {
-                return Self::ALL.iter().copied().find(|&code| return u8::from(code) == byte).ok_or(UnknownCode(byte));
+                return match byte {
+                    $($value => Ok(Self::$variant),)*
+                    _ => Err(UnknownCode(byte)),
+                };
             }
         }
     };
-    (@decode $name:ident $unknown:ident) => {
+    (@decode $name:ident $unknown:ident { $($variant:ident = $value:literal,)* }) => {
         impl From<u8> for $name {
             fn from(byte: u8) -> Self {
-                return Self::ALL.iter().copied().find(|&code| return u8::from(code) == byte).unwrap_or(Self::$unknown(byte));
+                return match byte {
+                    $($value => Self::$variant,)*
+                    other => Self::$unknown(other),
+                };
             }
         }
     };
@@ -45,7 +51,7 @@ macro_rules! wire_enum {
             }
         }
 
-        wire_enum!(@decode $name $($unknown)?);
+        wire_enum!(@decode $name $($unknown)? { $($variant = $value,)* });
     };
 }
 
