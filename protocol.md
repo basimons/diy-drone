@@ -110,9 +110,9 @@ The envelope is COBS-encoded (Consistent Overhead Byte Stuffing) so it contains 
 
 | Range | Topic | Types |
 |-------|-------|-------|
-| `0x01–0x0F` | Connection | `0x01` Hello, `0x02` HelloReply, `0x03` Ping, `0x04` Pong |
+| `0x01–0x0F` | Connection | `0x01` Hello, `0x02` HelloReply, `0x03` Ping, `0x04` Pong, `0x05` LinkTest, `0x06` LinkTestData, `0x07` LinkTestResult |
 | `0x10–0x1F` | Control | `0x10` Sticks |
-| `0x20–0x3F` | Commands | `0x20` Arm, `0x21` Disarm, `0x22` TakeOff, `0x23` Land, `0x24` GoHome, `0x25` Flip |
+| `0x20–0x3F` | Commands | `0x20` Arm, `0x21` Disarm, `0x22` TakeOff, `0x23` Land, `0x24` GoHome, `0x25` Flip, `0x26` SteadyState, `0x27` ExitSteadyState |
 | `0x40–0x4F` | Replies & events | `0x40` Reply, `0x41` Event |
 | `0x50–0x5F` | Settings | `0x50` SetSettings, `0x51` GetSettings, `0x52` Settings |
 | `0x60–0x6F` | Data streams | `0x60` RequestOnce, `0x61` Subscribe, `0x62` StreamData |
@@ -122,9 +122,9 @@ Direction: C→D = client (laptop) to drone, D→C = drone to client. The diagra
 
 ### 5.0 Requests and answers
 
-- A **request** is any C→D message except Sticks, Hello and Ping: commands, SetSettings, GetSettings, Subscribe, RequestOnce, ListLogs, ReadLog.
+- A **request** is any C→D message except Sticks, Hello and Ping: commands, LinkTest, SetSettings, GetSettings, Subscribe, RequestOnce, ListLogs, ReadLog.
 - Every request payload **starts with an Idempotency Key (u16)**, the client picks it by counting up its requests (skipping 0). It tells the drone "this is the same request as before" and lets the client match answers to requests. It is separate from the envelope Sequence.
-- Every request gets **exactly one answer**: its data message (Settings, StreamData, LogList, LogChunk, which echo the Idempotency Key), or a Reply. Errors (unknown stream/group/log ID, bad rate, refused) are always a Reply.
+- Every request gets **exactly one answer**: its data message (LinkTestResult, Settings, StreamData, LogList, LogChunk, which echo the Idempotency Key), or a Reply. Errors (unknown stream/group/log ID, bad rate, refused) are always a Reply.
 - **Resending:** if no answer arrives within a timeout, the client resends the request with the **same Idempotency Key** (and a new Sequence). The drone remembers the last 16 Idempotency Keys it handled; a repeat is answered again without executing twice.
 - Data sent without a request (default and subscribed streams) uses Idempotency Key 0.
 - The Idempotency Key is 2 bytes (not 1) so that many requests in flight (e.g. pipelined ReadLog over WiFi) never wrap into keys the drone still remembers.
@@ -232,6 +232,80 @@ Rules:
 - **A new Hello restarts the session at the protocol layer only:** sequence counters, subscriptions (back to the default set) and the remembered Idempotency Keys. It does **not** touch the internal state (sticks, armed state, settings). Sticks stop arriving while the client reconnects; that gap is handled by the normal link-loss logic like any other silence.
 - When authentication is added, the handshake is also where both sides exchange fresh random numbers for the session (protection against replaying recorded messages). Not now.
 
+### 5.1a Link test
+
+Measures how much data the link can carry, per direction (ELRS splits radio time very unevenly between the two directions, so they can differ a lot). Meant for the ground, or later in steady state (§5.3); when it is allowed is drone-side logic.
+
+**LinkTest** (`0x05`, C→D):
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|        Idempotency Key        |   Direction   |    Duration   |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    (cont.)    |  Filler Size  |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Idempotency Key (IK):** 2 bytes, u16, IK != 0.
+- **Direction (Dir):** 1 byte. One of: 0 = drone sends, 1 = client sends.
+- **Duration (Dur):** 2 bytes, u16, in ms. How long the sender keeps sending (up to ~65 s).
+- **Filler Size (FS):** 1 byte, 0 … 247. Bytes of filler per LinkTestData message, to see how message size affects throughput.
+
+**LinkTestData** (`0x06`, from whichever side is sending):
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|        Idempotency Key        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                       Filler (variable)                       :
+:                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Idempotency Key (IK):** 2 bytes, u16. The LinkTest this belongs to.
+- **Filler:** variable length, FS bytes of pseudo-random data (not all zeros: COBS costs differ for zeros, random filler gives a realistic result).
+
+The sender sends LinkTestData back to back, as fast as the link accepts, for the whole Duration. The envelope Sequence numbers them, so the receiver can count losses.
+
+**LinkTestResult** (`0x07`, D→C, the answer to LinkTest, sent when the test ends):
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|        Idempotency Key        |         Messages Sent         |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            (cont.)            |           Bytes Sent          |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            (cont.)            |       Messages Received       |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            (cont.)            |         Bytes Received        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            (cont.)            |            Elapsed            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            (cont.)            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Idempotency Key (IK):** 2 bytes, u16. The LinkTest it answers.
+- **Messages Sent (MS):** 4 bytes, u32. LinkTestData messages the drone sent (0 when the client was sending).
+- **Bytes Sent (BS):** 4 bytes, u32. Bytes the drone put on the wire for them, after COBS.
+- **Messages Received (MR):** 4 bytes, u32. Valid LinkTestData messages the drone received (0 when the drone was sending).
+- **Bytes Received (BR):** 4 bytes, u32. Bytes of those messages on the wire.
+- **Elapsed (El):** 4 bytes, u32. Drone's time in µs from the first to the last LinkTestData sent or received.
+
+The client puts these next to its own counts to get bytes per second and the loss rate for the tested direction. Sticks keep flowing during a test (client sends test or not), so the drone's link-loss logic is unaffected.
+
 ### 5.2 Control
 
 **Sticks** (`0x10`, C→D):
@@ -259,7 +333,7 @@ Values are stick positions, not distances; the flight code decides what they mea
 
 ### 5.3 Commands
 
-**Arm** (`0x20`), **Disarm** (`0x21`), **TakeOff** (`0x22`), **Land** (`0x23`), **GoHome** (`0x24`), all C→D:
+**Arm** (`0x20`), **Disarm** (`0x21`), **TakeOff** (`0x22`), **Land** (`0x23`), **GoHome** (`0x24`), **SteadyState** (`0x26`), **ExitSteadyState** (`0x27`), all C→D:
 
 ```
  0               1               2               3
@@ -292,6 +366,8 @@ where:
 - **Duration (Dur):** 2 bytes, u16. How long the flip takes, in ms (quick ≈ 300, slow ≈ 1500).
 
 GoHome is reserved until GPS is fitted; until then the drone answers "not supported". Every command gets a Reply (§5.0).
+
+**SteadyState** asks the drone to hold still where it is (level, holding height; without GPS it may drift sideways) and, while it does, to accept only a small set of requests. **ExitSteadyState** returns to normal flying. The client keeps sending Sticks as its heartbeat; while in steady state the drone ignores their values. Which requests are allowed in steady state (e.g. LinkTest, GetSettings, RequestOnce, Subscribe, Land, Disarm, ExitSteadyState) is drone-side logic, to be decided later.
 
 ### 5.4 Replies and events
 
@@ -613,7 +689,7 @@ Rules:
 
 ## 8. Open risks
 
-- **Airport throughput is unknown.** 50 Hz Sticks ≈ 16 B × 50 = 800 B/s plus streams. Measure on the bench. Fallbacks: send Sticks at 25 Hz, fewer streams in flight, 12-bit axes in a new version.
+- **Airport throughput is unknown.** 50 Hz Sticks ≈ 16 B × 50 = 800 B/s plus streams. Measure on the bench with LinkTest (§5.1a), both directions. Fallbacks: send Sticks at 25 Hz, fewer streams in flight, 12-bit axes in a new version.
 
 - **Possible later: separate radio and WiFi modes**, chosen in the handshake (an option bit), so WiFi can use bigger messages and fields (e.g. message size, Idempotency Key width) while radio stays small. Not now: one format for all links.
 
