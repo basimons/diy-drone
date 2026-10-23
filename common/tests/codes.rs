@@ -49,7 +49,7 @@ where
 fn message_types_match_protocol_table() {
     use MessageType::*;
     check_open(
-        &MessageType::ALL,
+        MessageType::ALL,
         &[
             (Hello, 0x01),
             (HelloReply, 0x02),
@@ -88,7 +88,7 @@ fn message_types_match_protocol_table() {
 fn hello_results() {
     use HelloResult::*;
     check(
-        &HelloResult::ALL,
+        HelloResult::ALL,
         &[(Ok, 0), (VersionMismatch, 1), (OptionNotSupported, 2)],
     );
 }
@@ -96,14 +96,14 @@ fn hello_results() {
 #[test]
 fn link_test_directions() {
     use LinkTestDirection::*;
-    check(&LinkTestDirection::ALL, &[(DroneSends, 0), (ClientSends, 1)]);
+    check(LinkTestDirection::ALL, &[(DroneSends, 0), (ClientSends, 1)]);
 }
 
 #[test]
 fn reply_statuses() {
     use Status::*;
     check(
-        &Status::ALL,
+        Status::ALL,
         &[
             (Ok, 0),
             (Refused, 1),
@@ -118,14 +118,14 @@ fn reply_statuses() {
 #[test]
 fn event_levels() {
     use EventLevel::*;
-    check(&EventLevel::ALL, &[(Debug, 0), (Info, 1), (Warning, 2), (Error, 3)]);
+    check(EventLevel::ALL, &[(Debug, 0), (Info, 1), (Warning, 2), (Error, 3)]);
 }
 
 #[test]
 fn stream_ids() {
     use StreamId::*;
     check_open(
-        &StreamId::ALL,
+        StreamId::ALL,
         &[
             (Status, 1),
             (Battery, 2),
