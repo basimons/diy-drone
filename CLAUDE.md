@@ -44,4 +44,5 @@ Rust lives in `~/.cargo/bin`, which may not be on `PATH` in a fresh shell (`scri
   "where:" field lists. Re-check them after any protocol change.
 - The user is new to drones: explain terms and spell out acronyms in docs and replies.
 - Commits use the personal identity (`bram.simons@hotmail.com`, set in the repo's git config).
-- Work on a branch and open a pull request for review; don't commit to `main` directly.
+- Work on a branch and open a pull request for review; don't commit to `main` directly. Merge with squash (one commit
+  per pull request on `main`).
