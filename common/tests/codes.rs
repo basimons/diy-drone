@@ -1,17 +1,11 @@
 use drone_common::wire::codes::*;
 use std::fmt::Debug;
 
-fn assert_all_matches_table<T: Copy + PartialEq + Debug>(all: &[T], table: &[(T, u8)]) {
-    let listed: Vec<T> = table.iter().map(|&(code, _)| return code).collect();
-    assert_eq!(all, &listed[..], "ALL must list every code, in protocol order");
-}
-
 /// Checks both directions for every listed code, and that every other byte is rejected.
-fn check<T>(all: &[T], table: &[(T, u8)])
+fn check<T>(table: &[(T, u8)])
 where
     T: TryFrom<u8, Error = UnknownCode> + Into<u8> + Copy + PartialEq + Debug,
 {
-    assert_all_matches_table(all, table);
     for &(code, byte) in table {
         assert_eq!(code.into(), byte, "{code:?} encodes wrong");
         assert_eq!(T::try_from(byte), Ok(code), "byte {byte:#04x} decodes wrong");
@@ -28,11 +22,10 @@ where
 }
 
 /// For enums with an `Unknown(byte)` fallback: every other byte decodes to `Unknown` and encodes back unchanged.
-fn check_open<T>(all: &[T], table: &[(T, u8)], unknown: fn(u8) -> T)
+fn check_open<T>(table: &[(T, u8)], unknown: fn(u8) -> T)
 where
     T: From<u8> + Into<u8> + Copy + PartialEq + Debug,
 {
-    assert_all_matches_table(all, table);
     for &(code, byte) in table {
         assert_eq!(code.into(), byte, "{code:?} encodes wrong");
         assert_eq!(T::from(byte), code, "byte {byte:#04x} decodes wrong");
@@ -49,7 +42,6 @@ where
 fn message_types_match_protocol_table() {
     use MessageType::*;
     check_open(
-        MessageType::ALL,
         &[
             (Hello, 0x01),
             (HelloReply, 0x02),
@@ -87,45 +79,38 @@ fn message_types_match_protocol_table() {
 #[test]
 fn hello_results() {
     use HelloResult::*;
-    check(
-        HelloResult::ALL,
-        &[(Ok, 0), (VersionMismatch, 1), (OptionNotSupported, 2)],
-    );
+    check(&[(Ok, 0), (VersionMismatch, 1), (OptionNotSupported, 2)]);
 }
 
 #[test]
 fn link_test_directions() {
     use LinkTestDirection::*;
-    check(LinkTestDirection::ALL, &[(DroneSends, 0), (ClientSends, 1)]);
+    check(&[(DroneSends, 0), (ClientSends, 1)]);
 }
 
 #[test]
 fn reply_statuses() {
     use Status::*;
-    check(
-        Status::ALL,
-        &[
-            (Ok, 0),
-            (Refused, 1),
-            (UnknownType, 2),
-            (Malformed, 3),
-            (NotSupported, 4),
-            (Busy, 5),
-        ],
-    );
+    check(&[
+        (Ok, 0),
+        (Refused, 1),
+        (UnknownType, 2),
+        (Malformed, 3),
+        (NotSupported, 4),
+        (Busy, 5),
+    ]);
 }
 
 #[test]
 fn event_levels() {
     use EventLevel::*;
-    check(EventLevel::ALL, &[(Debug, 0), (Info, 1), (Warning, 2), (Error, 3)]);
+    check(&[(Debug, 0), (Info, 1), (Warning, 2), (Error, 3)]);
 }
 
 #[test]
 fn stream_ids() {
     use StreamId::*;
     check_open(
-        StreamId::ALL,
         &[
             (Status, 1),
             (Battery, 2),

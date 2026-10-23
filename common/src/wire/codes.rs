@@ -3,7 +3,7 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UnknownCode(pub u8);
 
-/// Defines a one-byte code enum with `ALL` (every code, in protocol order) and conversions to and from `u8`.
+/// Defines a one-byte code enum with conversions to and from `u8`.
 /// Plain: `TryFrom<u8>` rejects unknown bytes with `UnknownCode`.
 /// `with Unknown`: adds an `Unknown(byte)` variant and an infallible `From<u8>`, for codes the drone must still
 /// see to answer them.
@@ -36,10 +36,6 @@ macro_rules! wire_enum {
         pub enum $name {
             $($variant,)*
             $($unknown(u8),)? // only produced by decoding, never holds a known code
-        }
-
-        impl $name {
-            pub const ALL: &'static [$name] = &[$(Self::$variant,)*];
         }
 
         impl From<$name> for u8 {
