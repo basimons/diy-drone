@@ -15,6 +15,7 @@ pub const MAX_FRAME_LEN: usize = cobs::max_encoded_len(MAX_ENVELOPE_LEN) + 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnvelopeError {
     PayloadTooLong,
+    UnknownMessageType, // `MessageType::Unknown` can be received but not sent
     TooShort,
     TooLong,
     BadCrc,
@@ -24,14 +25,21 @@ pub enum EnvelopeError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Envelope {
-    pub message_type: MessageType,
-    pub sequence: u16,
+    message_type: MessageType,
+    sequence: u16,
     payload: [u8; MAX_PAYLOAD_LEN],
     payload_len: u8,
 }
 
 impl Envelope {
     pub fn new(message_type: MessageType, sequence: u16, payload: &[u8]) -> Result<Self, EnvelopeError> {
+        if let MessageType::Unknown(_) = message_type {
+            return Err(EnvelopeError::UnknownMessageType);
+        }
+        return Self::from_parts(message_type, sequence, payload);
+    }
+
+    fn from_parts(message_type: MessageType, sequence: u16, payload: &[u8]) -> Result<Self, EnvelopeError> {
         if payload.len() > MAX_PAYLOAD_LEN {
             return Err(EnvelopeError::PayloadTooLong);
         }
@@ -43,6 +51,14 @@ impl Envelope {
         };
         envelope.payload[..payload.len()].copy_from_slice(payload);
         return Ok(envelope);
+    }
+
+    pub fn message_type(&self) -> MessageType {
+        return self.message_type;
+    }
+
+    pub fn sequence(&self) -> u16 {
+        return self.sequence;
     }
 
     pub fn payload(&self) -> &[u8] {
@@ -76,7 +92,7 @@ impl Envelope {
         if body[0] != 0 {
             return Err(EnvelopeError::UnsupportedFlags);
         }
-        return Self::new(
+        return Self::from_parts(
             MessageType::from(body[1]),
             u16::from_le_bytes([body[2], body[3]]),
             &body[HEADER_LEN..],

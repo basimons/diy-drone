@@ -34,8 +34,8 @@ fn decode_round_trips() {
     let len = envelope.encode(&mut out);
     let decoded = Envelope::decode(&out[..len]).unwrap();
     assert_eq!(decoded, envelope);
-    assert_eq!(decoded.message_type, MessageType::Event);
-    assert_eq!(decoded.sequence, 65535);
+    assert_eq!(decoded.message_type(), MessageType::Event);
+    assert_eq!(decoded.sequence(), 65535);
     assert_eq!(decoded.payload(), &[1, 0, 2, 0, 3]);
 }
 
@@ -43,7 +43,7 @@ fn decode_round_trips() {
 fn unknown_message_type_survives_decoding() {
     // The drone must still see it, to answer with Reply "unknown type".
     let decoded = Envelope::decode(&with_crc(vec![0x00, 0xEE, 0x01, 0x00])).unwrap();
-    assert_eq!(decoded.message_type, MessageType::Unknown(0xEE));
+    assert_eq!(decoded.message_type(), MessageType::Unknown(0xEE));
     assert_eq!(decoded.payload(), &[] as &[u8]);
 }
 
@@ -76,6 +76,40 @@ fn decode_rejects_bad_crc() {
     let mut bytes = with_crc(vec![0x00, 0x10, 0x05, 0x00, 0xAA]);
     bytes[4] ^= 0x01;
     assert_eq!(Envelope::decode(&bytes), Err(EnvelopeError::BadCrc));
+}
+
+#[test]
+fn decode_rejects_bad_crc_in_header() {
+    for index in [1, 2] {
+        let mut bytes = with_crc(vec![0x00, 0x10, 0x05, 0x00, 0xAA]);
+        bytes[index] ^= 0x01;
+        assert_eq!(
+            Envelope::decode(&bytes),
+            Err(EnvelopeError::BadCrc),
+            "byte {index} flipped"
+        );
+    }
+}
+
+#[test]
+fn decode_accepts_exactly_255_bytes() {
+    let bytes = with_crc(
+        vec![0x00, 0x73, 0x00, 0x00]
+            .into_iter()
+            .chain([1; MAX_PAYLOAD_LEN])
+            .collect(),
+    );
+    assert_eq!(bytes.len(), MAX_ENVELOPE_LEN);
+    assert_eq!(Envelope::decode(&bytes).unwrap().payload().len(), MAX_PAYLOAD_LEN);
+}
+
+#[test]
+fn new_rejects_unknown_message_type() {
+    // Unknown only comes out of decoding; sending it would decode as a different type (or as 0x00, which is never used).
+    for byte in [0x00, 0x01, 0xEE] {
+        let result = Envelope::new(MessageType::Unknown(byte), 0, &[]);
+        assert_eq!(result, Err(EnvelopeError::UnknownMessageType), "Unknown({byte:#04x})");
+    }
 }
 
 #[test]
@@ -134,6 +168,31 @@ fn reader_rejects_overlong_frame_and_carries_on() {
     let a = Envelope::new(MessageType::Sticks, 1, &[9]).unwrap();
     let bytes = [vec![0x55; MAX_FRAME_LEN + 10], vec![0], frame_of(&a)].concat();
     assert_eq!(read_all(&bytes), vec![Err(EnvelopeError::TooLong), Ok(a)]);
+}
+
+#[test]
+fn reader_overflows_only_past_the_largest_possible_frame() {
+    let a = Envelope::new(MessageType::Sticks, 1, &[9]).unwrap();
+    let longest = [vec![0x55; MAX_FRAME_LEN - 1], vec![0]].concat();
+    let too_long = [vec![0x55; MAX_FRAME_LEN], vec![0]].concat();
+    let results = read_all(&[longest, too_long, frame_of(&a)].concat());
+    assert_eq!(results.len(), 3);
+    assert!(
+        matches!(results[0], Err(e) if e != EnvelopeError::TooLong),
+        "{:?}",
+        results[0]
+    );
+    assert_eq!(results[1], Err(EnvelopeError::TooLong));
+    assert_eq!(results[2], Ok(a));
+}
+
+#[test]
+fn reader_rejects_frame_that_decodes_to_more_than_255_bytes() {
+    // Each 0x01 block stands for one zero: 257 of them decode to 256 zeros.
+    assert_eq!(
+        read_all(&[vec![0x01; MAX_FRAME_LEN - 1], vec![0]].concat()),
+        vec![Err(EnvelopeError::TooLong)]
+    );
 }
 
 #[test]
