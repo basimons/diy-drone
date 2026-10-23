@@ -15,10 +15,14 @@ pub fn crc8_dvb_s2(data: &[u8]) -> u8 {
     for &byte in data {
         crc ^= byte;
         for _ in 0..8 {
-            crc = if crc & 0x80 != 0 { (crc << 1) ^ 0xD5 } else { crc << 1 };
+            crc = if crc & 0x80 != 0 {
+                (crc << 1) ^ 0xD5
+            } else {
+                crc << 1
+            };
         }
     }
-    crc
+    return crc;
 }
 
 #[cfg(test)]

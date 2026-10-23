@@ -19,7 +19,7 @@ pub enum CobsError {
 /// (and one for empty input).
 pub const fn max_encoded_len(len: usize) -> usize {
     let runs = len.div_ceil(254);
-    len + if runs == 0 { 1 } else { runs }
+    return len + if runs == 0 { 1 } else { runs };
 }
 
 /// Encodes `input` into `output`, returning the number of bytes written.
@@ -51,7 +51,7 @@ pub fn encode(input: &[u8], output: &mut [u8]) -> Result<usize, CobsError> {
         }
     }
     output[code_at] = code;
-    Ok(written)
+    return Ok(written);
 }
 
 /// Decodes one frame (without its `0x00` delimiter) into `output`, returning the
@@ -79,14 +79,14 @@ pub fn decode(input: &[u8], output: &mut [u8]) -> Result<usize, CobsError> {
             put(output, &mut written, 0)?;
         }
     }
-    Ok(written)
+    return Ok(written);
 }
 
 /// Writes `byte` at `output[*at]` and moves `at` on, or fails if `output` is full.
 fn put(output: &mut [u8], at: &mut usize, byte: u8) -> Result<(), CobsError> {
     *output.get_mut(*at).ok_or(CobsError::OutputTooSmall)? = byte;
     *at += 1;
-    Ok(())
+    return Ok(());
 }
 
 #[cfg(test)]
@@ -96,24 +96,46 @@ mod tests {
 
     /// `count` consecutive byte values starting at `first`, e.g. run(0x01, 254) = 01 02 … FE.
     fn run(first: u8, count: usize) -> Vec<u8> {
-        (0..count).map(|i| first.wrapping_add(i as u8)).collect()
+        return (0..count)
+            .map(|i| return first.wrapping_add(i as u8))
+            .collect();
     }
 
     fn cat(parts: &[&[u8]]) -> Vec<u8> {
-        parts.concat()
+        return parts.concat();
     }
 
     /// The examples from the COBS article on Wikipedia, as (name, decoded, encoded).
     fn examples() -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
-        vec![
+        return vec![
             ("empty", vec![], vec![0x01]),
             ("single zero", vec![0x00], vec![0x01, 0x01]),
             ("two zeros", vec![0x00, 0x00], vec![0x01, 0x01, 0x01]),
-            ("zero byte zero", vec![0x00, 0x11, 0x00], vec![0x01, 0x02, 0x11, 0x01]),
-            ("zero in the middle", vec![0x11, 0x22, 0x00, 0x33], vec![0x03, 0x11, 0x22, 0x02, 0x33]),
-            ("no zeros", vec![0x11, 0x22, 0x33, 0x44], vec![0x05, 0x11, 0x22, 0x33, 0x44]),
-            ("trailing zeros", vec![0x11, 0x00, 0x00, 0x00], vec![0x02, 0x11, 0x01, 0x01, 0x01]),
-            ("254 non-zero bytes", run(0x01, 254), cat(&[&[0xFF], &run(0x01, 254)])),
+            (
+                "zero byte zero",
+                vec![0x00, 0x11, 0x00],
+                vec![0x01, 0x02, 0x11, 0x01],
+            ),
+            (
+                "zero in the middle",
+                vec![0x11, 0x22, 0x00, 0x33],
+                vec![0x03, 0x11, 0x22, 0x02, 0x33],
+            ),
+            (
+                "no zeros",
+                vec![0x11, 0x22, 0x33, 0x44],
+                vec![0x05, 0x11, 0x22, 0x33, 0x44],
+            ),
+            (
+                "trailing zeros",
+                vec![0x11, 0x00, 0x00, 0x00],
+                vec![0x02, 0x11, 0x01, 0x01, 0x01],
+            ),
+            (
+                "254 non-zero bytes",
+                run(0x01, 254),
+                cat(&[&[0xFF], &run(0x01, 254)]),
+            ),
             (
                 "zero then 254 non-zero bytes",
                 cat(&[&[0x00], &run(0x01, 254)]),
@@ -134,7 +156,7 @@ mod tests {
                 cat(&[&run(0x03, 253), &[0x00, 0x01]]),
                 cat(&[&[0xFE], &run(0x03, 253), &[0x02, 0x01]]),
             ),
-        ]
+        ];
     }
 
     #[test]
@@ -164,13 +186,19 @@ mod tests {
                 .map(|_| {
                     state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
                     let b = (state >> 16) as u8;
-                    if b < 40 { 0 } else { b }
+                    if b < 40 { return 0 } else { return b }
                 })
                 .collect();
             let mut encoded = [0u8; 300];
             let enc_len = encode(&input, &mut encoded).unwrap();
-            assert!(!encoded[..enc_len].contains(&0), "len {len}: encoded contains a zero");
-            assert!(enc_len <= max_encoded_len(len), "len {len}: {enc_len} > max");
+            assert!(
+                !encoded[..enc_len].contains(&0),
+                "len {len}: encoded contains a zero"
+            );
+            assert!(
+                enc_len <= max_encoded_len(len),
+                "len {len}: {enc_len} > max"
+            );
             let mut decoded = [0u8; 300];
             let dec_len = decode(&encoded[..enc_len], &mut decoded).unwrap();
             assert_eq!(&decoded[..dec_len], &input[..], "len {len}");
@@ -188,19 +216,28 @@ mod tests {
     #[test]
     fn encode_rejects_too_small_output() {
         let mut out = [0u8; 4];
-        assert_eq!(encode(&[0x11, 0x22, 0x33, 0x44], &mut out), Err(CobsError::OutputTooSmall));
+        assert_eq!(
+            encode(&[0x11, 0x22, 0x33, 0x44], &mut out),
+            Err(CobsError::OutputTooSmall)
+        );
     }
 
     #[test]
     fn decode_rejects_too_small_output() {
         let mut out = [0u8; 3];
-        assert_eq!(decode(&[0x05, 0x11, 0x22, 0x33, 0x44], &mut out), Err(CobsError::OutputTooSmall));
+        assert_eq!(
+            decode(&[0x05, 0x11, 0x22, 0x33, 0x44], &mut out),
+            Err(CobsError::OutputTooSmall)
+        );
     }
 
     #[test]
     fn decode_rejects_zero_byte() {
         let mut out = [0u8; 10];
-        assert_eq!(decode(&[0x03, 0x11, 0x00], &mut out), Err(CobsError::ZeroByte));
+        assert_eq!(
+            decode(&[0x03, 0x11, 0x00], &mut out),
+            Err(CobsError::ZeroByte)
+        );
         assert_eq!(decode(&[0x00], &mut out), Err(CobsError::ZeroByte));
     }
 
@@ -208,6 +245,9 @@ mod tests {
     fn decode_rejects_truncated_input() {
         // Code byte 0x05 promises four data bytes, only two follow.
         let mut out = [0u8; 10];
-        assert_eq!(decode(&[0x05, 0x11, 0x22], &mut out), Err(CobsError::Truncated));
+        assert_eq!(
+            decode(&[0x05, 0x11, 0x22], &mut out),
+            Err(CobsError::Truncated)
+        );
     }
 }

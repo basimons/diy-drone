@@ -14,5 +14,5 @@ fn main() -> anyhow::Result<()> {
     #[cfg(not(target_os = "linux"))]
     println!("not on Linux: hardware access is disabled in this build");
 
-    Ok(())
+    return Ok(());
 }

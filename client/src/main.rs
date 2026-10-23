@@ -3,7 +3,10 @@ use drone_common::{domain::RcChannels, protocol};
 fn main() -> anyhow::Result<()> {
     println!("drone-client says: {}", drone_common::hello());
     println!("default channels: {:?}", RcChannels::default());
-    println!("CRSF RC frame type: {:#04x}", protocol::FRAME_TYPE_RC_CHANNELS_PACKED);
+    println!(
+        "CRSF RC frame type: {:#04x}",
+        protocol::FRAME_TYPE_RC_CHANNELS_PACKED
+    );
 
     let ports = serialport::available_ports()?;
     println!("serial ports found: {}", ports.len());
@@ -16,5 +19,5 @@ fn main() -> anyhow::Result<()> {
         Err(e) => println!("gamepad support unavailable: {e}"),
     }
 
-    Ok(())
+    return Ok(());
 }
