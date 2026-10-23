@@ -85,8 +85,8 @@ where:
 
 - **Flags (F):** 1 byte. Bit 0 = "auth tag present". Bits 1–7 reserved. For now F == 0; until authentication exists, a receiver drops any frame with F != 0.
 - **Type (T):** 1 byte. Message type, see §5. 256 values; if more are ever needed, that is a new protocol version.
-- **Sequence (Seq):** 2 bytes, u16. Counter per direction, +1 for every message sent (resends too), wraps 65535 → 0. Detects lost messages (gaps), a frozen sender (counter stops), stale messages (over WiFi: older than the newest seen → dropped), and later replay. It is **not** used to re-sort messages and **not** used to match replies (that is the Idempotency Key, §5.0).
-- **Payload:** variable length, layout depends on T (§5). Requests and their answers start their payload with an Idempotency Key (§5.0); other messages (Sticks, Hello, Ping, Event, …) don't have one.
+- **Sequence (Seq):** 2 bytes, u16. Counter per direction, +1 for every message sent (resends too), wraps 65535 → 0. Detects lost messages (gaps), a frozen sender (counter stops), stale messages (over WiFi: older than the newest seen → dropped), and later replay. It is **not** used to re-sort messages and **not** used to match replies (that is the Request ID, §5.0).
+- **Payload:** variable length, layout depends on T (§5). Requests and their answers start their payload with a Request ID (§5.0); other messages (Sticks, Hello, Ping, Event, …) don't have one.
 - **Auth Tag:** present only when F bit 0 is set. Length and algorithm defined by a future protocol version. Absent for now.
 - **CRC-16 (CRC):** 2 bytes. Over every byte before it (Flags through Auth Tag). Variant CRC-16/CCITT-FALSE: polynomial 0x1021, init 0xFFFF, no reflection, no final XOR.
 
@@ -123,20 +123,20 @@ Direction: C→D = client (laptop) to drone, D→C = drone to client. The diagra
 ### 5.0 Requests and answers
 
 - A **request** is any C→D message except Sticks, Hello and Ping: commands, LinkTest, SetSettings, GetSettings, Subscribe, RequestOnce, ListLogs, ReadLog.
-- Every request payload **starts with an Idempotency Key (u16)**, the client picks it by counting up its requests (skipping 0). It tells the drone "this is the same request as before" and lets the client match answers to requests. It is separate from the envelope Sequence.
-- Every request gets **exactly one answer**: its data message (LinkTestResult, Settings, StreamData, LogList, LogChunk, which echo the Idempotency Key), or a Reply. Errors (unknown stream/group/log ID, bad rate, refused) are always a Reply.
-- **Resending:** if no answer arrives within a timeout, the client resends the request with the **same Idempotency Key** (and a new Sequence). The drone remembers the last 16 Idempotency Keys it handled; a repeat is answered again without executing twice.
-- Data sent without a request (default and subscribed streams) uses Idempotency Key 0.
-- The Idempotency Key is 2 bytes (not 1) so that many requests in flight (e.g. pipelined ReadLog over WiFi) never wrap into keys the drone still remembers.
+- Every request payload **starts with a Request ID (u16)**, the client picks it by counting up its requests (skipping 0). It tells the drone "this is the same request as before" and lets the client match answers to requests. It is separate from the envelope Sequence.
+- Every request gets **exactly one answer**: its data message (LinkTestResult, Settings, StreamData, LogList, LogChunk, which echo the Request ID), or a Reply. Errors (unknown stream/group/log ID, bad rate, refused) are always a Reply.
+- **Resending:** if no answer arrives within a timeout, the client resends the request with the **same Request ID** (and a new Sequence). The drone remembers the last 16 Request IDs it handled; a repeat is answered again without executing twice.
+- Data sent without a request (default and subscribed streams) uses Request ID 0.
+- The Request ID is 2 bytes (not 1) so that many requests in flight (e.g. pipelined ReadLog over WiFi) never wrap into IDs the drone still remembers.
 
 Example:
 
 ```
 seq 100  Sticks
-seq 101  Flip, Idempotency Key 7
+seq 101  Flip, Request ID 7
 seq 102  Sticks
 ...      (Reply lost)
-seq 150  Flip, Idempotency Key 7   ← resend: new Sequence, same Idempotency Key
+seq 150  Flip, Request ID 7   ← resend: new Sequence, same Request ID
          drone: already did 7 → sends the Reply again, does not flip twice
 ```
 
@@ -229,7 +229,7 @@ Rules:
 
 - **Until a handshake succeeds, everything except Hello and Ping is ignored.**
 - **Hello and HelloReply carry Sequence 0.** On a valid Hello the drone resets both counters; its HelloReply is its message 0.
-- **A new Hello restarts the session at the protocol layer only:** sequence counters, subscriptions (back to the default set) and the remembered Idempotency Keys. It does **not** touch the internal state (sticks, armed state, settings). Sticks stop arriving while the client reconnects; that gap is handled by the normal link-loss logic like any other silence.
+- **A new Hello restarts the session at the protocol layer only:** sequence counters, subscriptions (back to the default set) and the remembered Request IDs. It does **not** touch the internal state (sticks, armed state, settings). Sticks stop arriving while the client reconnects; that gap is handled by the normal link-loss logic like any other silence.
 - When authentication is added, the handshake is also where both sides exchange fresh random numbers for the session (protection against replaying recorded messages). Not now.
 
 ### 5.1a Link test
@@ -242,7 +242,7 @@ Measures how much data the link can carry, per direction (ELRS splits radio time
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |   Direction   |    Duration   |
+|           Request ID          |   Direction   |    Duration   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |    (cont.)    |  Filler Size  |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -250,7 +250,7 @@ Measures how much data the link can carry, per direction (ELRS splits radio time
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16, IK != 0.
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
 - **Direction (Dir):** 1 byte. One of: 0 = drone sends, 1 = client sends.
 - **Duration (Dur):** 2 bytes, u16, in ms. How long the sender keeps sending (up to ~65 s).
 - **Filler Size (FS):** 1 byte, 0 … 247. Bytes of filler per LinkTestData message, to see how message size affects throughput.
@@ -261,7 +261,7 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |
+|           Request ID          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                       Filler (variable)                       :
 :                                                               |
@@ -270,7 +270,7 @@ where:
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16. The LinkTest this belongs to.
+- **Request ID (RID):** 2 bytes, u16. The LinkTest this belongs to.
 - **Filler:** variable length, FS bytes of pseudo-random data (not all zeros: COBS costs differ for zeros, random filler gives a realistic result).
 
 The sender sends LinkTestData back to back, as fast as the link accepts, for the whole Duration. The envelope Sequence numbers them, so the receiver can count losses.
@@ -281,7 +281,7 @@ The sender sends LinkTestData back to back, as fast as the link accepts, for the
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |         Messages Sent         |
+|           Request ID          |         Messages Sent         |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |            (cont.)            |           Bytes Sent          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -297,7 +297,7 @@ The sender sends LinkTestData back to back, as fast as the link accepts, for the
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16. The LinkTest it answers.
+- **Request ID (RID):** 2 bytes, u16. The LinkTest it answers.
 - **Messages Sent (MS):** 4 bytes, u32. LinkTestData messages the drone sent (0 when the client was sending).
 - **Bytes Sent (BS):** 4 bytes, u32. Bytes the drone put on the wire for them, after COBS.
 - **Messages Received (MR):** 4 bytes, u32. Valid LinkTestData messages the drone received (0 when the drone was sending).
@@ -339,13 +339,13 @@ Values are stick positions, not distances; the flight code decides what they mea
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |
+|           Request ID          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16, IK != 0. See §5.0.
+- **Request ID (RID):** 2 bytes, u16, RID != 0. See §5.0.
 
 **Flip** (`0x25`, C→D):
 
@@ -353,7 +353,7 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |           Direction           |
+|           Request ID          |           Direction           |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |            Duration           |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -361,7 +361,7 @@ where:
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16, IK != 0.
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
 - **Direction (Dir):** 2 bytes, u16. 0 = forward, increasing clockwise seen from above, one full circle over 0 … 65535.
 - **Duration (Dur):** 2 bytes, u16. How long the flip takes, in ms (quick ≈ 300, slow ≈ 1500).
 
@@ -377,7 +377,7 @@ GoHome is reserved until GPS is fitted; until then the drone answers "not suppor
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |  Answers Type |     Status    |
+|           Request ID          |  Answers Type |     Status    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |             Reason            |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -385,12 +385,12 @@ GoHome is reserved until GPS is fitted; until then the drone answers "not suppor
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16. The request this answers.
+- **Request ID (RID):** 2 bytes, u16. The request this answers.
 - **Answers Type (AT):** 1 byte. The Type of that request.
 - **Status (St):** 1 byte. One of: 0 = OK, 1 = refused, 2 = unknown type, 3 = malformed, 4 = not supported, 5 = busy.
 - **Reason (Rsn):** 2 bytes, u16. Code whose meaning depends on the request (e.g. "too low", "battery low"). 0 = no reason given. Code list: defined in `drone-common`.
 
-**Event** (`0x41`, D→C, never an answer, so no Idempotency Key):
+**Event** (`0x41`, D→C, never an answer, so no Request ID):
 
 ```
  0               1               2               3
@@ -438,7 +438,7 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |
+|           Request ID          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                 Setting Group list (variable)                 :
 :                                                               |
@@ -447,7 +447,7 @@ where:
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16, IK != 0.
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
 - **Setting Group list:** variable length, one or more [Setting Group] back to back, until the end of the payload.
 
 **SetSettings is all-or-nothing.** The drone checks every group first. Any problem → nothing changes, one Reply with the reason. All good → every change takes effect at the same moment, between two flight-loop runs, and one Reply with OK.
@@ -458,7 +458,7 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |
+|           Request ID          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                    Group ID list (variable)                   :
 :                                                               |
@@ -467,7 +467,7 @@ where:
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16, IK != 0.
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
 - **Group ID list:** variable length, one or more u8 group IDs.
 
 **Settings** (`0x52`, D→C, the answer to GetSettings):
@@ -476,7 +476,7 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |
+|           Request ID          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                 Setting Group list (variable)                 :
 :                                                               |
@@ -485,7 +485,7 @@ where:
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16. The GetSettings it answers.
+- **Request ID (RID):** 2 bytes, u16. The GetSettings it answers.
 - **Setting Group list:** variable length, one [Setting Group] per requested group ID, in the requested order.
 
 An unknown group ID gives a Reply instead.
@@ -502,7 +502,7 @@ Each kind of live data is a numbered **stream** (1-byte ID, 0 never used; up to 
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |   Stream ID   |      Rate     |
+|           Request ID          |   Stream ID   |      Rate     |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |    (cont.)    |
 +-+-+-+-+-+-+-+-+
@@ -510,7 +510,7 @@ Each kind of live data is a numbered **stream** (1-byte ID, 0 never used; up to 
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16, IK != 0.
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
 - **Stream ID (SID):** 1 byte, u8.
 - **Rate:** 2 bytes, u16, in Hz. 0 = stop.
 
@@ -522,16 +522,16 @@ Answered with a Reply (OK, or e.g. unknown stream / rate not possible).
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |   Stream ID   |
+|           Request ID          |   Stream ID   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16, IK != 0.
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
 - **Stream ID (SID):** 1 byte, u8.
 
-Answered with one StreamData carrying this Idempotency Key (or a Reply on error).
+Answered with one StreamData carrying this Request ID (or a Reply on error).
 
 **StreamData** (`0x62`, D→C):
 
@@ -539,7 +539,7 @@ Answered with one StreamData carrying this Idempotency Key (or a Reply on error)
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |   Stream ID   |
+|           Request ID          |   Stream ID   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                        Data (variable)                        :
 :                                                               |
@@ -548,7 +548,7 @@ Answered with one StreamData carrying this Idempotency Key (or a Reply on error)
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16. The RequestOnce it answers, or 0 for default/subscribed data.
+- **Request ID (RID):** 2 bytes, u16. The RequestOnce it answers, or 0 for default/subscribed data.
 - **Stream ID (SID):** 1 byte, u8.
 - **Data:** variable length, layout per stream.
 
@@ -580,13 +580,13 @@ The drone records detailed data (sensors, PID internals, motor outputs) to its S
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |
+|           Request ID          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16, IK != 0.
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
 
 **LogList** (`0x71`, D→C):
 
@@ -594,7 +594,7 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |
+|           Request ID          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                   Log Entry list (variable)                   :
 :                                                               |
@@ -603,8 +603,8 @@ where:
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16. The ListLogs it answers.
-- **Log Entry list:** variable length, zero or more [Log Entry]. If they don't all fit in one message, the drone sends several LogList messages with the same IK.
+- **Request ID (RID):** 2 bytes, u16. The ListLogs it answers.
+- **Log Entry list:** variable length, zero or more [Log Entry]. If they don't all fit in one message, the drone sends several LogList messages with the same Request ID.
 
 A **Log Entry**:
 
@@ -629,7 +629,7 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |     Log ID    |     Offset    |
+|           Request ID          |     Log ID    |     Offset    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                    (cont.)                    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -637,7 +637,7 @@ where:
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16, IK != 0.
+- **Request ID (RID):** 2 bytes, u16, RID != 0.
 - **Log ID (LID):** 1 byte, u8.
 - **Offset (Off):** 4 bytes, u32. Byte position to start reading from.
 
@@ -647,7 +647,7 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Idempotency Key        |     Log ID    |     Offset    |
+|           Request ID          |     Log ID    |     Offset    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                    (cont.)                    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -658,7 +658,7 @@ where:
 
 where:
 
-- **Idempotency Key (IK):** 2 bytes, u16. The ReadLog it answers.
+- **Request ID (RID):** 2 bytes, u16. The ReadLog it answers.
 - **Log ID (LID):** 1 byte, u8.
 - **Offset (Off):** 4 bytes, u32. Same as requested.
 - **Data:** variable length, up to 242 bytes (what fits in 255).
@@ -674,7 +674,7 @@ Rules:
 
 1. Only messages with a valid CRC count, for anything.
 2. Each side's sequence counter starts at 0 at handshake and increments per sent message.
-3. A Reply refers to the request's Idempotency Key and type.
+3. A Reply refers to the request's Request ID and type.
 4. **Liveness:** the client's Sticks stream is its heartbeat; the drone's default status stream is the drone's heartbeat. How long a silence means "link lost" is drone/client logic (the design doc's 250 ms).
 5. **Liveness over CRSF:** in standard ELRS mode the TX module keeps repeating the last values even if the client program freezes, so silence is not enough. As already in drone-design.md, the client puts a counter on a spare channel that changes every frame. The CRSF adapter's link health records both "last valid frame" and "last time the counter changed"; the internal state's link-health type has room for both. Which channel: to be decided.
 
@@ -704,7 +704,7 @@ common/src/
 
 **`drone-link`: behaviour both sides need.** Depends on `drone-common`, never the other way around (Rust forbids circular dependencies between crates, so the boundary enforces itself). Created when its first piece is needed.
 
-- Sequence-gap counting, session-clock helpers, a generic "remember the last N Idempotency Keys", the auth tag computation (later).
+- Sequence-gap counting, session-clock helpers, a generic "remember the last N Request IDs", the auth tag computation (later).
 
 **Stays in `fc` / `client`:** deciding whether to obey a request, resend timers, link-loss timeouts, the handshake state machine, and all I/O (serial ports, sockets, clocks).
 
@@ -712,7 +712,7 @@ common/src/
 
 - **Decoded messages own their data.** Variable-length fields (Event text, LogChunk data, setting group lists, …) are copied out of the receive buffer into a fixed-size array plus a length inside the message. Every message is therefore as big as the biggest one (~250 bytes), which is fine; in return messages can be kept, queued and handed to other threads without Rust lifetimes everywhere. Switching to borrowing from the receive buffer stays possible if copying ever matters.
 - **Three kinds of checks:**
-  1. **Incoming data** (known enum values, ranges, Idempotency Key != 0, lengths): part of decoding, **always on, also in release builds**, because release is the build that flies. A decoded message is always a valid message.
+  1. **Incoming data** (known enum values, ranges, Request ID != 0, lengths): part of decoding, **always on, also in release builds**, because release is the build that flies. A decoded message is always a valid message.
   2. **Our own assumptions** ("this can never happen", e.g. the encoder's payload fits in 249 bytes): `debug_assert!`, debug builds only.
   3. **Extra logging:** a runtime switch (e.g. a verbose flag), so it can be turned on in the build that flies.
 
@@ -723,7 +723,7 @@ common/src/
 
 - **Airport throughput is unknown.** 50 Hz Sticks ≈ 16 B × 50 = 800 B/s plus streams. Measure on the bench with LinkTest (§5.1a), both directions. Fallbacks: send Sticks at 25 Hz, fewer streams in flight, 12-bit axes in a new version.
 
-- **Possible later: separate radio and WiFi modes**, chosen in the handshake (an option bit), so WiFi can use bigger messages and fields (e.g. message size, Idempotency Key width) while radio stays small. Not now: one format for all links.
+- **Possible later: separate radio and WiFi modes**, chosen in the handshake (an option bit), so WiFi can use bigger messages and fields (e.g. message size, Request ID width) while radio stays small. Not now: one format for all links.
 
 ## 9. Still to decide
 

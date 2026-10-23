@@ -8,42 +8,28 @@ pub struct UnknownCode(pub u8);
 /// `with Unknown`: adds an `Unknown(byte)` variant and an infallible `From<u8>`, for codes the drone must still
 /// see to answer them.
 macro_rules! wire_enum {
-    ($(#[$meta:meta])* $name:ident { $($variant:ident = $value:literal,)* }) => {
-        $(#[$meta])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum $name {
-            $($variant,)*
-        }
-
-        impl $name {
-            pub const ALL: &'static [$name] = &[$(Self::$variant,)*];
-        }
-
-        impl From<$name> for u8 {
-            fn from(code: $name) -> u8 {
-                return match code {
-                    $($name::$variant => $value,)*
-                };
-            }
-        }
-
+    (@decode $name:ident) => {
         impl TryFrom<u8> for $name {
             type Error = UnknownCode;
 
             fn try_from(byte: u8) -> Result<Self, UnknownCode> {
-                return match byte {
-                    $($value => Ok(Self::$variant),)*
-                    _ => Err(UnknownCode(byte)),
-                };
+                return Self::ALL.iter().copied().find(|&code| return u8::from(code) == byte).ok_or(UnknownCode(byte));
             }
         }
     };
-    ($(#[$meta:meta])* $name:ident with Unknown { $($variant:ident = $value:literal,)* }) => {
+    (@decode $name:ident $unknown:ident) => {
+        impl From<u8> for $name {
+            fn from(byte: u8) -> Self {
+                return Self::ALL.iter().copied().find(|&code| return u8::from(code) == byte).unwrap_or(Self::$unknown(byte));
+            }
+        }
+    };
+    ($(#[$meta:meta])* $name:ident $(with $unknown:ident)? { $($variant:ident = $value:literal,)* }) => {
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum $name {
             $($variant,)*
-            Unknown(u8), // only produced by decoding, never holds a known code
+            $($unknown(u8),)? // only produced by decoding, never holds a known code
         }
 
         impl $name {
@@ -54,19 +40,12 @@ macro_rules! wire_enum {
             fn from(code: $name) -> u8 {
                 return match code {
                     $($name::$variant => $value,)*
-                    $name::Unknown(byte) => byte,
+                    $($name::$unknown(byte) => byte,)?
                 };
             }
         }
 
-        impl From<u8> for $name {
-            fn from(byte: u8) -> Self {
-                return match byte {
-                    $($value => Self::$variant,)*
-                    other => Self::Unknown(other),
-                };
-            }
-        }
+        wire_enum!(@decode $name $($unknown)?);
     };
 }
 
