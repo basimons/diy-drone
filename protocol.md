@@ -177,7 +177,7 @@ where:
 - **Result (R):** 1 byte. One of: 0 = OK, 1 = version mismatch, 2 = option not supported.
 - **Options (Opt):** 4 bytes, u32. The options the drone accepted. When R == 2, the bits the client asked for that are missing here are the unsupported ones.
 
-**Ping** (`0x03`, either direction) and **Pong** (`0x04`, the answer):
+**Ping** (`0x03`, either direction):
 
 ```
  0               1               2               3
@@ -189,7 +189,34 @@ where:
 
 where:
 
-- **Timestamp (TS):** 4 bytes, u32. Sender's clock in ms. A Pong echoes the Ping's TS unchanged, so the sender can compute the round-trip time.
+- **Timestamp (TS):** 4 bytes, u32. Sender's clock in ms when the Ping was sent.
+
+**Pong** (`0x04`, the answer to a Ping):
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                           Ping Time                           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                          Receive Time                         |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                           Send Time                           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Ping Time (T1):** 4 bytes, u32. The Ping's Timestamp, echoed unchanged.
+- **Receive Time (T2):** 4 bytes, u32. Answerer's clock in ms when the Ping arrived.
+- **Send Time (T3):** 4 bytes, u32. Answerer's clock in ms when the Pong was sent.
+
+With T4 = the Ping sender's clock when the Pong arrives (NTP-style):
+
+- round-trip delay = (T4 − T1) − (T3 − T2)
+- clock offset (answerer − sender) ≈ ((T2 − T1) + (T3 − T4)) / 2, assuming the delay is the same both ways
+
+The offset lets drone logs and client logs be lined up afterwards. All times wrap after ~49 days; differences are computed with wrapping arithmetic.
 
 Rules:
 
