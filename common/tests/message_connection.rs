@@ -21,22 +21,31 @@ fn check(message: Message, message_type: MessageType, payload: &[u8]) {
 fn hello() {
     let hello = Message::Hello(Hello {
         protocol_version: 7,
-        options: 0x0A0B0C0D,
+        options: Options {
+            authentication: true,
+            unknown: 0,
+        },
     });
-    check(hello, MessageType::Hello, &[0x07, 0x0D, 0x0C, 0x0B, 0x0A]);
+    check(hello, MessageType::Hello, &[0x07, 0x01, 0x00, 0x00, 0x00]);
 }
 
 #[test]
-fn hello_with_options_still_decodes() {
+fn hello_keeps_unknown_option_bits() {
     // The drone answers unsupported options with HelloReply "option not supported", so it must see them.
-    let decoded = Message::decode(&envelope(MessageType::Hello, &[1, 0xFF, 0xFF, 0xFF, 0xFF]));
+    let payload = [1, 0x21, 0x00, 0x00, 0x80];
+    let decoded = Message::decode(&envelope(MessageType::Hello, &payload)).unwrap();
+    let options = Options {
+        authentication: true,
+        unknown: 0x8000_0020,
+    };
     assert_eq!(
         decoded,
-        Ok(Message::Hello(Hello {
+        Message::Hello(Hello {
             protocol_version: 1,
-            options: 0xFFFF_FFFF
-        }))
+            options
+        })
     );
+    assert_eq!(decoded.encode(0).payload(), &payload);
 }
 
 #[test]
@@ -44,9 +53,9 @@ fn hello_reply() {
     let reply = Message::HelloReply(HelloReply {
         protocol_version: 1,
         result: HelloResult::OptionNotSupported,
-        options: 0x0000_0002,
+        options: Options::default(),
     });
-    check(reply, MessageType::HelloReply, &[0x01, 0x02, 0x02, 0x00, 0x00, 0x00]);
+    check(reply, MessageType::HelloReply, &[0x01, 0x02, 0x00, 0x00, 0x00, 0x00]);
 }
 
 #[test]
@@ -57,7 +66,7 @@ fn hello_with_other_version_still_decodes() {
         decoded,
         Ok(Message::Hello(Hello {
             protocol_version: 2,
-            options: 0
+            options: Options::default()
         }))
     );
 }
@@ -67,7 +76,7 @@ fn hello_and_hello_reply_always_use_sequence_0() {
     // protocol.md §5.1: they carry Sequence 0, whatever the sender's counter says.
     let hello = Message::Hello(Hello {
         protocol_version: 1,
-        options: 0,
+        options: Options::default(),
     });
     assert_eq!(hello.encode(9).sequence(), 0);
     for (message_type, payload) in [
@@ -93,7 +102,7 @@ fn hello_reply_every_result() {
         let reply = Message::HelloReply(HelloReply {
             protocol_version: 1,
             result,
-            options: 0,
+            options: Options::default(),
         });
         check(reply, MessageType::HelloReply, &[1, byte, 0, 0, 0, 0]);
     }

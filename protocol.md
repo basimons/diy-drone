@@ -711,6 +711,7 @@ common/src/
 ### 7.1 Decisions
 
 - **Decoded messages own their data.** Variable-length fields (Event text, LogChunk data, setting group lists, …) are copied out of the receive buffer into a fixed-size array plus a length inside the message. Every message is therefore as big as the biggest one (~250 bytes), which is fine; in return messages can be kept, queued and handed to other threads without Rust lifetimes everywhere. Switching to borrowing from the receive buffer stays possible if copying ever matters.
+- **Decoded messages are typed, not raw bytes.** Codes are enums and bit fields are structs of named `bool`s; plain numbers stay numbers (versions, counts, µs, cm). Unknown codes or bits are only kept (`Unknown(byte)`, `unknown` bits) where the receiver must still see them to answer, e.g. an unknown message type or an unsupported Hello option.
 - **Three kinds of checks:**
   1. **Incoming data** (known enum values, ranges, Request ID != 0, lengths): part of decoding, **always on, also in release builds**, because release is the build that flies. A decoded message is always a valid message.
   2. **Our own assumptions** ("this can never happen", e.g. the encoder's payload fits in 249 bytes): `debug_assert!`, debug builds only.

@@ -10,17 +10,40 @@ pub enum DecodeError {
     InvalidValue,
 }
 
+/// Hello/HelloReply options (protocol.md §5.1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Options {
+    pub authentication: bool,
+    pub unknown: u32, // bits without a meaning yet, kept so the drone can answer "option not supported"
+}
+
+const AUTHENTICATION: u32 = 1 << 0;
+
+impl Options {
+    fn from_bits(bits: u32) -> Self {
+        return Self {
+            authentication: bits & AUTHENTICATION != 0,
+            unknown: bits & !AUTHENTICATION,
+        };
+    }
+
+    fn bits(&self) -> u32 {
+        let authentication = if self.authentication { AUTHENTICATION } else { 0 };
+        return authentication | (self.unknown & !AUTHENTICATION);
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hello {
     pub protocol_version: u8,
-    pub options: u32,
+    pub options: Options,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HelloReply {
     pub protocol_version: u8,
     pub result: HelloResult,
-    pub options: u32,
+    pub options: Options,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,12 +82,12 @@ impl Message {
         match self {
             Message::Hello(m) => {
                 w.u8(m.protocol_version);
-                w.u32(m.options);
+                w.u32(m.options.bits());
             }
             Message::HelloReply(m) => {
                 w.u8(m.protocol_version);
                 w.u8(u8::from(m.result));
-                w.u32(m.options);
+                w.u32(m.options.bits());
             }
             Message::Ping(m) => w.u32(m.timestamp),
             Message::Pong(m) => {
@@ -88,12 +111,12 @@ impl Message {
         let message = match envelope.message_type() {
             MessageType::Hello => Message::Hello(Hello {
                 protocol_version: r.u8()?,
-                options: r.u32()?,
+                options: Options::from_bits(r.u32()?),
             }),
             MessageType::HelloReply => Message::HelloReply(HelloReply {
                 protocol_version: r.u8()?,
                 result: HelloResult::try_from(r.u8()?).map_err(|_| return DecodeError::InvalidValue)?,
-                options: r.u32()?,
+                options: Options::from_bits(r.u32()?),
             }),
             MessageType::Ping => Message::Ping(Ping { timestamp: r.u32()? }),
             MessageType::Pong => Message::Pong(Pong {
