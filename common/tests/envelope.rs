@@ -1,3 +1,4 @@
+use drone_common::wire::codes::MessageType;
 use drone_common::wire::crc16::crc16;
 use drone_common::wire::envelope::*;
 
@@ -20,7 +21,7 @@ fn with_crc(mut bytes: Vec<u8>) -> Vec<u8> {
 
 #[test]
 fn encodes_header_payload_and_crc_little_endian() {
-    let envelope = Envelope::new(0x10, 0x1234, &[0xAA, 0xBB]).unwrap();
+    let envelope = Envelope::new(MessageType::Sticks, 0x1234, &[0xAA, 0xBB]).unwrap();
     let mut out = [0u8; MAX_ENVELOPE_LEN];
     let len = envelope.encode(&mut out);
     assert_eq!(&out[..len], &with_crc(vec![0x00, 0x10, 0x34, 0x12, 0xAA, 0xBB])[..]);
@@ -28,12 +29,12 @@ fn encodes_header_payload_and_crc_little_endian() {
 
 #[test]
 fn decode_round_trips() {
-    let envelope = Envelope::new(0x41, 65535, &[1, 0, 2, 0, 3]).unwrap();
+    let envelope = Envelope::new(MessageType::Event, 65535, &[1, 0, 2, 0, 3]).unwrap();
     let mut out = [0u8; MAX_ENVELOPE_LEN];
     let len = envelope.encode(&mut out);
     let decoded = Envelope::decode(&out[..len]).unwrap();
     assert_eq!(decoded, envelope);
-    assert_eq!(decoded.message_type, 0x41);
+    assert_eq!(decoded.message_type, MessageType::Event);
     assert_eq!(decoded.sequence, 65535);
     assert_eq!(decoded.payload(), &[1, 0, 2, 0, 3]);
 }
@@ -42,15 +43,15 @@ fn decode_round_trips() {
 fn unknown_message_type_survives_decoding() {
     // The drone must still see it, to answer with Reply "unknown type".
     let decoded = Envelope::decode(&with_crc(vec![0x00, 0xEE, 0x01, 0x00])).unwrap();
-    assert_eq!(decoded.message_type, 0xEE);
+    assert_eq!(decoded.message_type, MessageType::Unknown(0xEE));
     assert_eq!(decoded.payload(), &[] as &[u8]);
 }
 
 #[test]
 fn new_accepts_max_payload_and_rejects_longer() {
-    assert!(Envelope::new(0x73, 0, &[7; MAX_PAYLOAD_LEN]).is_ok());
+    assert!(Envelope::new(MessageType::LogChunk, 0, &[7; MAX_PAYLOAD_LEN]).is_ok());
     assert_eq!(
-        Envelope::new(0x73, 0, &[7; MAX_PAYLOAD_LEN + 1]),
+        Envelope::new(MessageType::LogChunk, 0, &[7; MAX_PAYLOAD_LEN + 1]),
         Err(EnvelopeError::PayloadTooLong)
     );
 }
@@ -86,7 +87,7 @@ fn decode_rejects_flags_until_authentication_exists() {
 #[test]
 fn sticks_sized_frame_is_16_bytes_with_only_a_trailing_zero() {
     // protocol.md §4.2: 6 envelope + 8 payload + 2 COBS overhead and delimiter.
-    let frame = frame_of(&Envelope::new(0x10, 0, &[0; 8]).unwrap());
+    let frame = frame_of(&Envelope::new(MessageType::Sticks, 0, &[0; 8]).unwrap());
     assert_eq!(frame.len(), 16);
     assert_eq!(frame.last(), Some(&0));
     assert!(!frame[..15].contains(&0));
@@ -94,15 +95,15 @@ fn sticks_sized_frame_is_16_bytes_with_only_a_trailing_zero() {
 
 #[test]
 fn reader_returns_frames_sent_back_to_back() {
-    let a = Envelope::new(0x10, 1, &[1, 2, 3]).unwrap();
-    let b = Envelope::new(0x03, 2, &[0, 0, 0, 0]).unwrap();
+    let a = Envelope::new(MessageType::Sticks, 1, &[1, 2, 3]).unwrap();
+    let b = Envelope::new(MessageType::Ping, 2, &[0, 0, 0, 0]).unwrap();
     let bytes = [frame_of(&a), frame_of(&b)].concat();
     assert_eq!(read_all(&bytes), vec![Ok(a), Ok(b)]);
 }
 
 #[test]
 fn reader_ignores_empty_frames() {
-    let a = Envelope::new(0x10, 1, &[1]).unwrap();
+    let a = Envelope::new(MessageType::Sticks, 1, &[1]).unwrap();
     let bytes = [vec![0, 0, 0], frame_of(&a), vec![0]].concat();
     assert_eq!(read_all(&bytes), vec![Ok(a)]);
 }
@@ -110,7 +111,7 @@ fn reader_ignores_empty_frames() {
 #[test]
 fn reader_recovers_after_garbage() {
     // Joining mid-frame: the partial frame fails, the next one is fine.
-    let a = Envelope::new(0x10, 1, &[1, 2]).unwrap();
+    let a = Envelope::new(MessageType::Sticks, 1, &[1, 2]).unwrap();
     let full = frame_of(&a);
     let bytes = [full[3..].to_vec(), full.clone()].concat();
     let results = read_all(&bytes);
@@ -121,7 +122,7 @@ fn reader_recovers_after_garbage() {
 
 #[test]
 fn reader_reports_bad_crc_and_carries_on() {
-    let a = Envelope::new(0x10, 1, &[1, 2, 3, 4]).unwrap();
+    let a = Envelope::new(MessageType::Sticks, 1, &[1, 2, 3, 4]).unwrap();
     let mut corrupted = frame_of(&a);
     corrupted[5] ^= 0x40;
     let bytes = [corrupted, frame_of(&a)].concat();
@@ -130,15 +131,15 @@ fn reader_reports_bad_crc_and_carries_on() {
 
 #[test]
 fn reader_rejects_overlong_frame_and_carries_on() {
-    let a = Envelope::new(0x10, 1, &[9]).unwrap();
+    let a = Envelope::new(MessageType::Sticks, 1, &[9]).unwrap();
     let bytes = [vec![0x55; MAX_FRAME_LEN + 10], vec![0], frame_of(&a)].concat();
     assert_eq!(read_all(&bytes), vec![Err(EnvelopeError::TooLong), Ok(a)]);
 }
 
 #[test]
 fn reader_handles_maximum_size_envelopes() {
-    let zeros = Envelope::new(0x73, 7, &[0; MAX_PAYLOAD_LEN]).unwrap();
-    let ones = Envelope::new(0x73, 8, &[1; MAX_PAYLOAD_LEN]).unwrap();
+    let zeros = Envelope::new(MessageType::LogChunk, 7, &[0; MAX_PAYLOAD_LEN]).unwrap();
+    let ones = Envelope::new(MessageType::LogChunk, 8, &[1; MAX_PAYLOAD_LEN]).unwrap();
     let bytes = [frame_of(&zeros), frame_of(&ones)].concat();
     assert_eq!(read_all(&bytes), vec![Ok(zeros), Ok(ones)]);
 }

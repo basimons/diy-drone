@@ -1,6 +1,7 @@
 //! The envelope around every message (protocol.md §4.1) and its COBS framing (§4.2).
 
 use crate::wire::cobs::{self, CobsError};
+use crate::wire::codes::MessageType;
 use crate::wire::crc16::crc16;
 
 const HEADER_LEN: usize = 4; // flags, type, sequence
@@ -23,15 +24,14 @@ pub enum EnvelopeError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Envelope {
-    /// Raw, not `MessageType`: an unknown type must still reach the drone so it can answer "unknown type".
-    pub message_type: u8,
+    pub message_type: MessageType,
     pub sequence: u16,
     payload: [u8; MAX_PAYLOAD_LEN],
     payload_len: u8,
 }
 
 impl Envelope {
-    pub fn new(message_type: u8, sequence: u16, payload: &[u8]) -> Result<Self, EnvelopeError> {
+    pub fn new(message_type: MessageType, sequence: u16, payload: &[u8]) -> Result<Self, EnvelopeError> {
         if payload.len() > MAX_PAYLOAD_LEN {
             return Err(EnvelopeError::PayloadTooLong);
         }
@@ -54,7 +54,7 @@ impl Envelope {
         let payload = self.payload();
         let crc_at = HEADER_LEN + payload.len();
         out[0] = 0; // flags
-        out[1] = self.message_type;
+        out[1] = u8::from(self.message_type);
         out[2..4].copy_from_slice(&self.sequence.to_le_bytes());
         out[HEADER_LEN..crc_at].copy_from_slice(payload);
         let crc = crc16(&out[..crc_at]);
@@ -76,7 +76,11 @@ impl Envelope {
         if body[0] != 0 {
             return Err(EnvelopeError::UnsupportedFlags);
         }
-        return Self::new(body[1], u16::from_le_bytes([body[2], body[3]]), &body[HEADER_LEN..]);
+        return Self::new(
+            MessageType::from(body[1]),
+            u16::from_le_bytes([body[2], body[3]]),
+            &body[HEADER_LEN..],
+        );
     }
 
     /// COBS-encoded and with the `0x00` delimiter, ready to send. Returns the number of bytes written.

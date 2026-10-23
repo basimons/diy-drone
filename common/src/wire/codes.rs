@@ -32,7 +32,37 @@ macro_rules! wire_enum {
     };
 }
 
-wire_enum!(MessageType {
+/// Like `wire_enum!`, plus `Unknown(byte)` for codes the receiver must still see, to answer them.
+macro_rules! open_wire_enum {
+    ($(#[$meta:meta])* $name:ident { $($variant:ident = $value:literal,)* }) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum $name {
+            $($variant,)*
+            Unknown(u8), // only produced by decoding, never holds a known code
+        }
+
+        impl From<u8> for $name {
+            fn from(value: u8) -> Self {
+                return match value {
+                    $($value => Self::$variant,)*
+                    other => Self::Unknown(other),
+                };
+            }
+        }
+
+        impl From<$name> for u8 {
+            fn from(code: $name) -> u8 {
+                return match code {
+                    $($name::$variant => $value,)*
+                    $name::Unknown(value) => value,
+                };
+            }
+        }
+    };
+}
+
+open_wire_enum!(MessageType {
     Hello = 0x01,
     HelloReply = 0x02,
     Ping = 0x03,
@@ -93,7 +123,7 @@ wire_enum!(EventLevel {
     Error = 3,
 });
 
-wire_enum!(
+open_wire_enum!(
     /// Units per stream are in protocol.md §5.6.
     StreamId {
         Status = 1,
