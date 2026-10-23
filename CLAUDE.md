@@ -38,7 +38,7 @@ Rust lives in `~/.cargo/bin`, which may not be on `PATH` in a fresh shell (`scri
 
 - Test first: write the failing test, watch it fail, then implement.
 - Tests live in each crate's `tests/` folder (e.g. `common/tests/cobs.rs`), not in `#[cfg(test)]` modules in the
-  source files. They test through the public API.
+  source files. They test through the public API only; private functions are covered implicitly, never tested directly.
 - Every message in protocol.md has its own packet diagram, and diagrams must match their
   "where:" field lists. Re-check them after any protocol change.
 - The user is new to drones: explain terms and spell out acronyms in docs and replies.
