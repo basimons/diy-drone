@@ -678,14 +678,46 @@ Rules:
 4. **Liveness:** the client's Sticks stream is its heartbeat; the drone's default status stream is the drone's heartbeat. How long a silence means "link lost" is drone/client logic (the design doc's 250 ms).
 5. **Liveness over CRSF:** in standard ELRS mode the TX module keeps repeating the last values even if the client program freezes, so silence is not enough. As already in drone-design.md, the client puts a counter on a spare channel that changes every frame. The CRSF adapter's link health records both "last valid frame" and "last time the counter changed"; the internal state's link-health type has room for both. Which channel: to be decided.
 
-## 7. What goes in `drone-common`
+## 7. Code structure
 
-- Envelope encode/decode, COBS, CRC-16 — `no_std`, no allocation, fixed 255-byte buffers.
-- A Rust type for every message in §5 with encode/decode.
-- Settings group and stream layouts.
-- The **internal state** types the adapters produce (sticks, pending command, settings changes, link health).
-- The CRSF adapter's frame parsing (CRSF RC channels and the standard telemetry frames).
+Two shared crates, both `no_std` (no operating system or heap needed) so the flight side can use them safely.
+
+**`drone-common`: the language both sides speak.** Types and bytes, no behaviour.
+
+```
+common/src/
+  domain/      internal state: Sticks, ArmState, Command, LinkHealth, settings values
+  wire/        our protocol
+    crc16.rs
+    cobs.rs
+    envelope.rs   Flags / Type / Sequence / (Auth Tag) / CRC
+    message.rs    enum Message { Hello(..), Sticks(..), Flip(..), ... } + encode/decode
+    codes.rs      MessageType, Status, ReasonCode, EventCode, StreamId, GroupId
+  crsf/        CRC-8, CRSF frame parsing, CRSF channels → Sticks
+```
+
+- The **internal state** types the adapters produce (sticks, pending command, settings changes, link health). They are protocol-neutral: CRSF units (172–1811) only exist inside `crsf/`, which converts them.
+- A Rust type for every message in §5 with encode/decode. Messages are shaped like the wire; where a message *is* a domain concept (Sticks), it holds the domain type instead of a copy of it.
+- Envelope encode/decode, COBS, CRC-16, fixed 255-byte buffers.
+- Settings group and stream layouts; reason and event codes.
 - Tests: round-trip every message; corrupted/truncated frames are rejected; COBS edge cases (zeros, 254-byte runs, max size).
+
+**`drone-link`: behaviour both sides need.** Depends on `drone-common`, never the other way around (Rust forbids circular dependencies between crates, so the boundary enforces itself). Created when its first piece is needed.
+
+- Sequence-gap counting, session-clock helpers, a generic "remember the last N Idempotency Keys", the auth tag computation (later).
+
+**Stays in `fc` / `client`:** deciding whether to obey a request, resend timers, link-loss timeouts, the handshake state machine, and all I/O (serial ports, sockets, clocks).
+
+### 7.1 Decisions
+
+- **Decoded messages own their data.** Variable-length fields (Event text, LogChunk data, setting group lists, …) are copied out of the receive buffer into a fixed-size array plus a length inside the message. Every message is therefore as big as the biggest one (~250 bytes), which is fine; in return messages can be kept, queued and handed to other threads without Rust lifetimes everywhere. Switching to borrowing from the receive buffer stays possible if copying ever matters.
+- **Three kinds of checks:**
+  1. **Incoming data** (known enum values, ranges, Idempotency Key != 0, lengths): part of decoding, **always on, also in release builds**, because release is the build that flies. A decoded message is always a valid message.
+  2. **Our own assumptions** ("this can never happen", e.g. the encoder's payload fits in 249 bytes): `debug_assert!`, debug builds only.
+  3. **Extra logging:** a runtime switch (e.g. a verbose flag), so it can be turned on in the build that flies.
+
+  Debug builds may *add* logs and asserts but never *decide* differently from release builds.
+- **Wrapping arithmetic is explicit.** Sequence numbers and session-clock times use `wrapping_add` / `wrapping_sub`. Plain `+` panics on overflow in debug builds but silently wraps in release, which would make the two behave differently.
 
 ## 8. Open risks
 
@@ -699,4 +731,3 @@ Rules:
 - Exact stream field layouts and settings group layouts beyond what is listed.
 - Reply reason codes and event codes.
 - Command resend timeout and default stream rates.
-- Module/file structure inside `drone-common`.

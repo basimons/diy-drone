@@ -4,11 +4,13 @@
 //! laptop, on the Pi, and on a microcontroller if the project ever moves to one.
 #![no_std]
 
-#[cfg(feature = "std")]
+// Tests may use the standard library (Vec, formatting) even though the crate itself does not.
+#[cfg(any(feature = "std", test))]
 extern crate std;
 
 pub mod domain;
 pub mod protocol;
+pub mod wire;
 
 pub fn hello() -> &'static str {
     "hello from drone-common"
