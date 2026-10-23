@@ -1,6 +1,6 @@
 use drone_common::wire::codes::{HelloResult, MessageType};
 use drone_common::wire::crc16::crc16;
-use drone_common::wire::envelope::Envelope;
+use drone_common::wire::envelope::{Envelope, MAX_PAYLOAD_LEN};
 use drone_common::wire::message::*;
 
 fn envelope(message_type: MessageType, payload: &[u8]) -> Envelope {
@@ -10,8 +10,9 @@ fn envelope(message_type: MessageType, payload: &[u8]) -> Envelope {
 /// Encodes `message`, checks the envelope's type and payload bytes, and checks it decodes back to `message`.
 fn check(message: Message, message_type: MessageType, payload: &[u8]) {
     let encoded = message.encode(42);
+    let handshake = matches!(message_type, MessageType::Hello | MessageType::HelloReply);
     assert_eq!(encoded.message_type(), message_type);
-    assert_eq!(encoded.sequence(), 42);
+    assert_eq!(encoded.sequence(), if handshake { 0 } else { 42 });
     assert_eq!(encoded.payload(), payload);
     assert_eq!(Message::decode(&encoded), Ok(message));
 }
@@ -53,9 +54,61 @@ fn hello_reply() {
 }
 
 #[test]
+fn hello_with_other_version_still_decodes() {
+    // The drone answers with HelloReply "version mismatch", so it must see the version.
+    let decoded = Message::decode(&envelope(MessageType::Hello, &[2, 0, 0, 0, 0, 0]));
+    assert_eq!(
+        decoded,
+        Ok(Message::Hello(Hello {
+            protocol_version: 2,
+            options: 0
+        }))
+    );
+}
+
+#[test]
+fn hello_and_hello_reply_always_use_sequence_0() {
+    // protocol.md §5.1: they carry Sequence 0, whatever the sender's counter says.
+    let hello = Message::Hello(Hello {
+        protocol_version: 1,
+        options: 0,
+    });
+    assert_eq!(hello.encode(9).sequence(), 0);
+    for (message_type, payload) in [
+        (MessageType::Hello, vec![1, 0, 0, 0, 0, 0]),
+        (MessageType::HelloReply, vec![1, 0, 0, 0, 0, 0, 0]),
+    ] {
+        let decoded = Message::decode(&Envelope::new(message_type, 7, &payload).unwrap());
+        assert_eq!(
+            decoded,
+            Err(DecodeError::InvalidValue),
+            "{message_type:?} with sequence 7"
+        );
+    }
+}
+
+#[test]
+fn hello_reply_every_result() {
+    for (result, byte) in [
+        (HelloResult::Ok, 0),
+        (HelloResult::VersionMismatch, 1),
+        (HelloResult::OptionNotSupported, 2),
+    ] {
+        let reply = Message::HelloReply(HelloReply {
+            protocol_version: 1,
+            result,
+            options: 0,
+        });
+        check(reply, MessageType::HelloReply, &[1, 0, byte, 0, 0, 0, 0]);
+    }
+}
+
+#[test]
 fn hello_reply_rejects_unknown_result() {
-    let decoded = Message::decode(&envelope(MessageType::HelloReply, &[1, 0, 3, 0, 0, 0, 0]));
-    assert_eq!(decoded, Err(DecodeError::InvalidValue));
+    for byte in [3, 0xFF] {
+        let decoded = Message::decode(&envelope(MessageType::HelloReply, &[1, 0, byte, 0, 0, 0, 0]));
+        assert_eq!(decoded, Err(DecodeError::InvalidValue), "result {byte}");
+    }
 }
 
 #[test]
@@ -90,7 +143,7 @@ fn rejects_wrong_payload_length() {
         (MessageType::Pong, 12),
     ];
     for (message_type, length) in cases {
-        for wrong in [0, length - 1, length + 1] {
+        for wrong in [0, length - 1, length + 1, MAX_PAYLOAD_LEN] {
             let decoded = Message::decode(&envelope(message_type, &vec![0; wrong]));
             assert_eq!(
                 decoded,

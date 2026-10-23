@@ -53,6 +53,7 @@ impl Message {
         };
     }
 
+    /// Hello and HelloReply always get Sequence 0 (protocol.md §5.1), whatever `sequence` is.
     pub fn encode(&self, sequence: u16) -> Envelope {
         let mut w = Writer::new();
         match self {
@@ -72,11 +73,15 @@ impl Message {
                 w.u32(m.send_time);
             }
         }
+        let sequence = if is_handshake(self.message_type()) { 0 } else { sequence };
         return Envelope::new(self.message_type(), sequence, w.written())
             .expect("every message fits in an envelope and has a known type");
     }
 
     pub fn decode(envelope: &Envelope) -> Result<Self, DecodeError> {
+        if is_handshake(envelope.message_type()) && envelope.sequence() != 0 {
+            return Err(DecodeError::InvalidValue);
+        }
         let mut r = Reader {
             bytes: envelope.payload(),
         };
@@ -104,6 +109,10 @@ impl Message {
         }
         return Ok(message);
     }
+}
+
+fn is_handshake(message_type: MessageType) -> bool {
+    return matches!(message_type, MessageType::Hello | MessageType::HelloReply);
 }
 
 /// Reads little-endian fields from the front of a payload.
