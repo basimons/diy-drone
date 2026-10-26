@@ -1,146 +1,96 @@
 //! Reply (protocol.md §5.4): the drone's answer to a request, typed per request.
 
-use core::convert::Infallible;
+use crate::wire::codes::code;
+use crate::wire::message::{Answer, MessageError, Request, RequestId};
+use crate::wire::payload::{Code, Reader, Wire, Writer};
 
-use crate::wire::codes::{
-    ArmRefusal, FlipRefusal, GetSettingsRefusal, LandRefusal, LinkTestRefusal, MessageType, ReadLogRefusal, Refusal,
-    RequestOnceRefusal, SetSettingsRefusal, Status, SteadyStateRefusal, SubscribeRefusal, TakeOffRefusal, Unknown,
-};
-use crate::wire::message::{MessageError, RequestId};
-use crate::wire::payload::{Reader, Writer};
-
-/// The drone's answer to a request it has no data message for, or that failed (protocol.md §5.4).
+/// The drone's answer to a request (protocol.md §5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Reply {
     pub request_id: RequestId,
     pub answer: Answer,
 }
 
+impl Reply {
+    /// The Reply to `request`: its Request ID and type come from the request, so they can't be mixed up.
+    pub fn to<R: Request>(request: &R, outcome: Result<(), Failure<R::Refusal>>) -> Self {
+        return Self {
+            request_id: request.request_id(),
+            answer: R::answer(outcome),
+        };
+    }
+}
+
 /// Why a request failed. On the wire: the Status, plus the Reason for `Refused`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Failure<R: Refusal> {
+pub enum Failure<R> {
     Refused(R),
     Malformed,
     NotSupported,
     Busy,
     NotAllowedNow, // allowed in general, but not in the drone's current state (e.g. steady state)
-    Unknown { status: Unknown<Status>, reason: u16 }, // a status this build doesn't know, kept for the caller
 }
 
-impl<R: Refusal> Failure<R> {
-    fn to_wire(self) -> (Status, u16) {
-        return match self {
-            Failure::Refused(refusal) => (Status::Refused, refusal.reason()),
-            Failure::Malformed => (Status::Malformed, 0),
-            Failure::NotSupported => (Status::NotSupported, 0),
-            Failure::Busy => (Status::Busy, 0),
-            Failure::NotAllowedNow => (Status::NotAllowedNow, 0),
-            Failure::Unknown { status, reason } => (Status::Unknown(status), reason),
-        };
+code!(
+    /// Status byte of a Reply. In Rust a Reply holds an `Answer` instead, which can't combine them wrongly.
+    pub(crate) Status: u8 {
+        Ok = 0,
+        Refused = 1,
+        UnknownType = 2,
+        Malformed = 3,
+        NotSupported = 4,
+        Busy = 5,
+        NotAllowedNow = 6,
     }
+);
 
-    fn from_wire(status: Status, reason: u16) -> Result<Self, MessageError> {
-        return match (status, reason) {
-            (Status::Refused, _) => R::from_reason(reason)
-                .map(Failure::Refused)
-                .ok_or(MessageError::InvalidValue),
-            (Status::Malformed, 0) => Ok(Failure::Malformed),
-            (Status::NotSupported, 0) => Ok(Failure::NotSupported),
-            (Status::Busy, 0) => Ok(Failure::Busy),
-            (Status::NotAllowedNow, 0) => Ok(Failure::NotAllowedNow),
-            (Status::Unknown(status), _) => Ok(Failure::Unknown { status, reason }),
-            _ => Err(MessageError::InvalidValue), // Ok or UnknownType, or a Reason where none belongs
-        };
-    }
-}
-
-fn outcome_to_wire<R: Refusal>(outcome: Result<(), Failure<R>>) -> (Status, u16) {
-    return match outcome {
+/// Status and Reason of a request's outcome.
+pub(crate) fn outcome_to_wire<R: Code<Repr = u16>>(outcome: Result<(), Failure<R>>) -> (Status, u16) {
+    let (status, reason) = match outcome {
         Ok(()) => (Status::Ok, 0),
-        Err(failure) => failure.to_wire(),
+        Err(Failure::Refused(refusal)) => (Status::Refused, refusal.repr()),
+        Err(Failure::Malformed) => (Status::Malformed, 0),
+        Err(Failure::NotSupported) => (Status::NotSupported, 0),
+        Err(Failure::Busy) => (Status::Busy, 0),
+        Err(Failure::NotAllowedNow) => (Status::NotAllowedNow, 0),
     };
+    debug_assert!(
+        (status == Status::Refused) == (reason != 0),
+        "{status:?} with Reason {reason}"
+    );
+    return (status, reason);
 }
 
-fn outcome_from_wire<R: Refusal>(status: Status, reason: u16) -> Result<Result<(), Failure<R>>, MessageError> {
+pub(crate) fn outcome_from_wire<R: Code<Repr = u16>>(
+    status: Status,
+    reason: u16,
+) -> Result<Result<(), Failure<R>>, MessageError> {
     return match (status, reason) {
+        (Status::Refused, 0) => Err(MessageError::InvalidValue),
+        (Status::Refused, _) => Ok(Err(Failure::Refused(R::from_repr(reason)?))),
+        (_, 1..) => Err(MessageError::InvalidValue), // only a refusal has a Reason
         (Status::Ok, 0) => Ok(Ok(())),
-        _ => Failure::from_wire(status, reason).map(Err),
+        (Status::Malformed, 0) => Ok(Err(Failure::Malformed)),
+        (Status::NotSupported, 0) => Ok(Err(Failure::NotSupported)),
+        (Status::Busy, 0) => Ok(Err(Failure::Busy)),
+        (Status::NotAllowedNow, 0) => Ok(Err(Failure::NotAllowedNow)),
+        (Status::UnknownType, 0) => Err(MessageError::InvalidValue), // only answers a type the drone doesn't know
     };
 }
 
-/// Defines `Answer`: per request, what its Reply can say.
-/// `ok`: success is a Reply with Status OK. `failure_only`: success is a data message, so a Reply always failed.
-macro_rules! answers {
-    (ok { $($ok:ident($ok_refusal:ty),)* } failure_only { $($failed:ident($failed_refusal:ty),)* }) => {
-        /// What a Reply says, typed per request (protocol.md §5.4), so a Reply can't combine Answers Type,
-        /// Status and Reason in a way the protocol doesn't allow.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub enum Answer {
-            $($ok(Result<(), Failure<$ok_refusal>>),)*
-            $($failed(Failure<$failed_refusal>),)*
-            UnknownType(Unknown<MessageType>), // always Status "unknown type", never a Reason
-        }
-
-        impl Answer {
-            /// Answers Type, Status and Reason.
-            fn to_wire(self) -> (MessageType, (Status, u16)) {
-                return match self {
-                    $(Answer::$ok(outcome) => (MessageType::$ok, outcome_to_wire(outcome)),)*
-                    $(Answer::$failed(failure) => (MessageType::$failed, failure.to_wire()),)*
-                    Answer::UnknownType(unknown) => (MessageType::Unknown(unknown), (Status::UnknownType, 0)),
-                };
-            }
-
-            fn from_wire(answers: MessageType, status: Status, reason: u16) -> Result<Self, MessageError> {
-                return match answers {
-                    $(MessageType::$ok => Ok(Answer::$ok(outcome_from_wire(status, reason)?)),)*
-                    $(MessageType::$failed => Ok(Answer::$failed(Failure::from_wire(status, reason)?)),)*
-                    MessageType::Unknown(unknown) => match (status, reason) {
-                        (Status::UnknownType, 0) => Ok(Answer::UnknownType(unknown)),
-                        _ => Err(MessageError::InvalidValue),
-                    },
-                    _ => Err(MessageError::InvalidValue), // not a request
-                };
-            }
-        }
-    };
-}
-
-answers! {
-    ok {
-        Arm(ArmRefusal),
-        Disarm(Infallible), // never refused: disarming must always work
-        TakeOff(TakeOffRefusal),
-        Land(LandRefusal),
-        GoHome(Infallible), // "not supported" until GPS is fitted
-        Flip(FlipRefusal),
-        SteadyState(SteadyStateRefusal),
-        ExitSteadyState(Infallible),
-        SetSettings(SetSettingsRefusal),
-        Subscribe(SubscribeRefusal),
-    }
-    failure_only {
-        LinkTest(LinkTestRefusal),       // success is LinkTestResult
-        GetSettings(GetSettingsRefusal), // success is Settings
-        RequestOnce(RequestOnceRefusal), // success is StreamData
-        ListLogs(Infallible),            // success is LogList
-        ReadLog(ReadLogRefusal),         // success is LogChunk
-    }
-}
-
-impl Reply {
-    pub(crate) fn write(&self, w: &mut Writer) {
-        let (answers, (status, reason)) = self.answer.to_wire();
-        w.u16(self.request_id.0);
-        w.u8(u8::from(answers));
-        w.u8(u8::from(status));
-        w.u16(reason);
-    }
-
-    pub(crate) fn read(r: &mut Reader) -> Result<Self, MessageError> {
+impl Wire for Reply {
+    fn read(r: &mut Reader) -> Result<Self, MessageError> {
         return Ok(Self {
-            request_id: RequestId(r.u16()?),
-            answer: Answer::from_wire(MessageType::from(r.u8()?), Status::from(r.u8()?), r.u16()?)?,
+            request_id: RequestId::read(r)?,
+            answer: Answer::from_wire(u8::read(r)?, Status::read(r)?, u16::read(r)?)?,
         });
+    }
+
+    fn write(&self, w: &mut Writer) {
+        let (answers, (status, reason)) = self.answer.to_wire();
+        self.request_id.write(w);
+        answers.write(w);
+        status.write(w);
+        reason.write(w);
     }
 }

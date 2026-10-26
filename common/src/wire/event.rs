@@ -1,19 +1,17 @@
 //! Event (protocol.md §5.4): the drone tells the client something happened. One type per event, holding only
-//! the data that event has; the level and code of a known event are fixed.
+//! the data that event has; the level and code of an event are fixed by its type.
 
-use core::num::NonZeroU16;
-
-use crate::wire::codes::{EventCode, EventLevel, FailsafeCause, Unknown};
+use crate::wire::codes::{EventLevel, FailsafeCause};
 use crate::wire::message::MessageError;
 use crate::wire::packet::MAX_PAYLOAD_LEN;
-use crate::wire::payload::{Reader, Writer, invalid};
+use crate::wire::payload::{Reader, Wire, Writer, impl_wire, invalid};
 
 /// The rest of the payload after Level and Code.
-pub const MAX_EVENT_DATA_LEN: usize = MAX_PAYLOAD_LEN - 3;
+pub const MAX_EVENT_TEXT_LEN: usize = MAX_PAYLOAD_LEN - 3;
 
-/// What every known event type has: its code and level on the wire.
+/// What every event type has: its code and level on the wire.
 pub trait EventKind {
-    const CODE: EventCode;
+    const CODE: u16;
     const LEVEL: EventLevel;
 }
 
@@ -24,57 +22,32 @@ pub struct Text {
     pub text: EventText,
 }
 
-/// An event this build doesn't know (from a newer drone), kept so the caller can e.g. log it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct UnknownEvent {
-    pub level: EventLevel,
-    pub code: Unknown<EventCode>,
-    pub data: EventData,
-}
-
-/// Up to `MAX_EVENT_DATA_LEN` bytes, owned (protocol.md §7.1).
+/// UTF-8 text of 1 to `MAX_EVENT_TEXT_LEN` bytes, owned (protocol.md §7.1).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct Bytes {
-    bytes: [u8; MAX_EVENT_DATA_LEN], // zero after `len`, so the derived `PartialEq` compares the content only
+pub struct EventText {
+    bytes: [u8; MAX_EVENT_TEXT_LEN], // zero after `len`, so the derived `PartialEq` compares the text only
     len: usize,
 }
 
-impl Bytes {
-    fn new(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() > MAX_EVENT_DATA_LEN {
+impl EventText {
+    /// `None` if `text` is empty or longer than `MAX_EVENT_TEXT_LEN` bytes.
+    pub fn new(text: &str) -> Option<Self> {
+        if text.is_empty() || text.len() > MAX_EVENT_TEXT_LEN {
             return None;
         }
         return Some(Self {
-            bytes: core::array::from_fn(|i| return bytes.get(i).copied().unwrap_or(0)),
-            len: bytes.len(),
+            bytes: core::array::from_fn(|i| return text.as_bytes().get(i).copied().unwrap_or(0)),
+            len: text.len(),
         });
     }
 
-    fn as_slice(&self) -> &[u8] {
-        debug_assert!(self.len <= MAX_EVENT_DATA_LEN, "length {}", self.len);
+    pub fn as_str(&self) -> &str {
+        debug_assert!((1..=MAX_EVENT_TEXT_LEN).contains(&self.len), "length {}", self.len);
         debug_assert!(
             self.bytes[self.len..].iter().all(|&b| return b == 0),
             "PartialEq needs zero padding"
         );
-        return &self.bytes[..self.len];
-    }
-}
-
-/// UTF-8 text of 1 to `MAX_EVENT_DATA_LEN` bytes.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EventText(Bytes);
-
-impl EventText {
-    /// `None` if `text` is empty or longer than `MAX_EVENT_DATA_LEN` bytes.
-    pub fn new(text: &str) -> Option<Self> {
-        if text.is_empty() {
-            return None;
-        }
-        return Bytes::new(text.as_bytes()).map(Self);
-    }
-
-    pub fn as_str(&self) -> &str {
-        return core::str::from_utf8(self.0.as_slice()).expect("only built from a str");
+        return core::str::from_utf8(&self.bytes[..self.len]).expect("only built from a str");
     }
 }
 
@@ -84,88 +57,73 @@ impl core::fmt::Debug for EventText {
     }
 }
 
-/// The raw data of an `UnknownEvent`: 0 to `MAX_EVENT_DATA_LEN` bytes.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EventData(Bytes);
-
-impl EventData {
-    /// `None` if `data` is longer than `MAX_EVENT_DATA_LEN` bytes.
-    pub fn new(data: &[u8]) -> Option<Self> {
-        return Bytes::new(data).map(Self);
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        return self.0.as_slice();
-    }
-}
-
-impl core::fmt::Debug for EventData {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        return core::fmt::Debug::fmt(self.as_bytes(), f);
-    }
-}
-
-/// A field inside an event's data.
-trait Field: Sized {
-    fn read(r: &mut Reader) -> Result<Self, MessageError>;
-
-    fn write(self, w: &mut Writer);
-}
-
-impl Field for u16 {
+/// Takes the rest of the payload.
+impl Wire for EventText {
     fn read(r: &mut Reader) -> Result<Self, MessageError> {
-        return r.u16();
+        let text = core::str::from_utf8(r.rest()).map_err(invalid)?;
+        return EventText::new(text).ok_or(MessageError::InvalidValue);
     }
 
-    fn write(self, w: &mut Writer) {
-        w.u16(self);
-    }
-}
-
-impl Field for u32 {
-    fn read(r: &mut Reader) -> Result<Self, MessageError> {
-        return r.u32();
-    }
-
-    fn write(self, w: &mut Writer) {
-        w.u32(self);
+    fn write(&self, w: &mut Writer) {
+        w.put(self.as_str().as_bytes());
     }
 }
 
-impl Field for FailsafeCause {
-    fn read(r: &mut Reader) -> Result<Self, MessageError> {
-        return Ok(Self::from(r.u8()?));
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Armed;
 
-    fn write(self, w: &mut Writer) {
-        w.u8(u8::from(self));
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Disarmed;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LinkLost;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LinkRestored;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BatteryLow {
+    pub millivolts: u16, // whole pack
 }
 
-/// A unit struct for an event without data, so it is written `Armed` rather than `Armed {}`.
-macro_rules! event_struct {
-    ($(#[$meta:meta])* $name:ident {}) => {
-        $(#[$meta])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub struct $name;
-    };
-    ($(#[$meta:meta])* $name:ident { $($(#[$field_meta:meta])* $field:ident: $ty:ty,)+ }) => {
-        $(#[$meta])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub struct $name {
-            $($(#[$field_meta])* pub $field: $ty,)+
-        }
-    };
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BatteryCritical {
+    pub millivolts: u16, // whole pack
 }
 
-/// Defines one struct per known event (named like its `EventCode`), and `Event` over all of them.
+/// An automatic safety action took over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FailsafeTriggered {
+    pub cause: FailsafeCause,
+}
+
+/// The flight loop missed its deadline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LoopOverrun {
+    pub late_us: u32, // how late the loop run finished
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ImuError;
+
+impl_wire!(Armed {});
+impl_wire!(Disarmed {});
+impl_wire!(LinkLost {});
+impl_wire!(LinkRestored {});
+impl_wire!(BatteryLow { millivolts });
+impl_wire!(BatteryCritical { millivolts });
+impl_wire!(FailsafeTriggered { cause });
+impl_wire!(LoopOverrun { late_us });
+impl_wire!(ImuError {});
+
+/// Defines `Event` from one list of event types with their code and level.
 macro_rules! events {
-    ($($(#[$meta:meta])* $name:ident = $level:ident { $($(#[$field_meta:meta])* $field:ident: $ty:ty,)* })*) => {
-        $(
-            event_struct!($(#[$meta])* $name { $($(#[$field_meta])* $field: $ty,)* });
+    ($($name:ident = $code:literal, $level:ident;)*) => {
+        const _: () = assert!($($code != 0 &&)* true, "Code 0 is Text");
 
+        $(
             impl EventKind for $name {
-                const CODE: EventCode = EventCode::$name;
+                const CODE: u16 = $code;
                 const LEVEL: EventLevel = EventLevel::$level;
             }
         )*
@@ -175,83 +133,58 @@ macro_rules! events {
         pub enum Event {
             $($name($name),)*
             Text(Text),
-            Unknown(UnknownEvent),
         }
 
         impl Event {
-            /// `None` for `Text`, which has Code 0.
-            pub fn code(&self) -> Option<EventCode> {
-                return match self {
-                    $(Event::$name(_) => Some($name::CODE),)*
-                    Event::Text(_) => None,
-                    Event::Unknown(event) => Some(EventCode::Unknown(event.code)),
-                };
-            }
-
             pub fn level(&self) -> EventLevel {
                 return match self {
                     $(Event::$name(_) => $name::LEVEL,)*
                     Event::Text(text) => text.level,
-                    Event::Unknown(event) => event.level,
                 };
             }
 
-            pub(crate) fn write(&self, w: &mut Writer) {
-                w.u8(u8::from(self.level()));
-                w.u16(self.code().map_or(0, |code| return NonZeroU16::from(code).get()));
-                match self {
-                    $(Event::$name(_event) => { $(_event.$field.write(w);)* })*
-                    Event::Text(text) => w.put(text.text.as_str().as_bytes()),
-                    Event::Unknown(event) => w.put(event.data.as_bytes()),
-                }
+            fn code(&self) -> u16 {
+                return match self {
+                    $(Event::$name(_) => $name::CODE,)*
+                    Event::Text(_) => 0,
+                };
             }
+        }
 
-            pub(crate) fn read(r: &mut Reader) -> Result<Self, MessageError> {
-                let level = EventLevel::from(r.u8()?);
-                let code = NonZeroU16::new(r.u16()?).map(EventCode::from);
-                let event = match code {
-                    None => Event::Text(Text {
-                        level,
-                        text: EventText::new(core::str::from_utf8(r.rest()).map_err(invalid)?)
-                            .ok_or(MessageError::InvalidValue)?,
-                    }),
-                    Some(EventCode::Unknown(code)) => Event::Unknown(UnknownEvent {
-                        level,
-                        code,
-                        data: EventData::new(r.rest()).ok_or(MessageError::WrongLength)?,
-                    }),
-                    $(Some(EventCode::$name) => Event::$name($name { $($field: <$ty as Field>::read(r)?,)* }),)*
+        impl Wire for Event {
+            fn read(r: &mut Reader) -> Result<Self, MessageError> {
+                let level = EventLevel::read(r)?;
+                let event = match u16::read(r)? {
+                    0 => Event::Text(Text { level, text: EventText::read(r)? }),
+                    $($code => Event::$name($name::read(r)?),)*
+                    code => return Err(MessageError::UnknownCode { kind: "EventCode", value: code }),
                 };
                 if event.level() != level {
-                    return Err(MessageError::InvalidValue); // a known event always has its own level
+                    return Err(MessageError::InvalidValue); // an event other than Text always has its own level
                 }
                 return Ok(event);
+            }
+
+            fn write(&self, w: &mut Writer) {
+                self.level().write(w);
+                self.code().write(w);
+                match self {
+                    $(Event::$name(event) => event.write(w),)*
+                    Event::Text(text) => text.text.write(w),
+                }
             }
         }
     };
 }
 
 events! {
-    Armed = Info {}
-    Disarmed = Info {}
-    LinkLost = Warning {}
-    LinkRestored = Info {}
-    BatteryLow = Warning {
-        /// Whole pack.
-        millivolts: u16,
-    }
-    BatteryCritical = Error {
-        /// Whole pack.
-        millivolts: u16,
-    }
-    /// An automatic safety action took over.
-    FailsafeTriggered = Error {
-        cause: FailsafeCause,
-    }
-    /// The flight loop missed its deadline.
-    LoopOverrun = Error {
-        /// How late the loop run finished, in µs.
-        late_us: u32,
-    }
-    ImuError = Error {}
+    Armed = 0x0101, Info;
+    Disarmed = 0x0102, Info;
+    LinkLost = 0x0201, Warning;
+    LinkRestored = 0x0202, Info;
+    BatteryLow = 0x0301, Warning;
+    BatteryCritical = 0x0302, Error;
+    FailsafeTriggered = 0x0401, Error;
+    LoopOverrun = 0x0402, Error;
+    ImuError = 0x0403, Error;
 }

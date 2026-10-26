@@ -23,7 +23,7 @@ At the same time the drone must still be flyable with **standard ELRS/CRSF** (no
 - Room to add **authentication** later without redesigning the format.
 
 **Non-goals (for now)**
-- **Backwards compatibility.** Breaking older code on both sides is fine; that is what the protocol version is for.
+- **Backwards compatibility.** Breaking older code on both sides is fine; that is what the protocol version is for. Adding a message type, code, event or reason is a new protocol version too, so after a successful Hello both sides know exactly the same codes. Only Hello and HelloReply are read across versions (§5.1).
 - Authentication/signing itself (only the room for it).
 - Deciding *when the drone accepts or refuses* something (e.g. "settings only while disarmed", "no flip below X m"). That is drone-side logic, built later. The protocol only provides the way to say "refused, because…".
 - Encryption (hiding content). Nothing sent is secret.
@@ -231,6 +231,7 @@ Rules:
 
 - **Until a handshake succeeds, everything except Hello and Ping is ignored.**
 - **Hello and HelloReply carry Sequence 0.** On a valid Hello the drone resets both counters; its HelloReply is its message 0.
+- **Hello and HelloReply never change**, not even in a new protocol version: their layout, Result codes and the meaning of each option bit stay as they are, so a client and drone of different versions can always tell each other so. Option bits the receiver doesn't know are kept, so the drone can answer "option not supported".
 - **A new Hello restarts the session at the protocol layer only:** sequence counters, subscriptions (back to the default set) and the remembered Request IDs. It does **not** touch the internal state (sticks, armed state, settings). Sticks stop arriving while the client reconnects; that gap is handled by the normal link-loss logic like any other silence.
 - When authentication is added, the handshake is also where both sides exchange fresh random numbers for the session (protection against replaying recorded messages). Not now.
 
@@ -416,7 +417,7 @@ Rules:
 
 - Status unknown type (2) only answers a Type the drone doesn't know, always with Reason 0. A known Type is never answered with it.
 - Any other combination is invalid: OK to a request whose success is a data message, OK or busy with a Reason, refused without one, refused for a request that is never refused, an Answers Type that is not a request (e.g. Sticks).
-- A Status or Reason the receiver doesn't know (from a newer peer) is **kept, not rejected**: the receiver decides what to do with it, e.g. log it.
+- A Status or Reason the receiver doesn't know makes the Reply invalid. Both sides passed Hello with the same protocol version, so they know the same codes (§2).
 
 **Event** (`0x41`, D→C, never an answer, so no Request ID): the drone tells the client something happened.
 
@@ -489,7 +490,7 @@ Rules:
 
 - A known Code with a different Level, or with Data that doesn't match its layout, makes the Event invalid.
 - A Text event with no text is invalid.
-- A Code the receiver doesn't know (from a newer peer) is **kept, not rejected**, with its Level and its Data as raw bytes, so the receiver can e.g. log it. An unknown Level is only kept for Text and for unknown Codes; an unknown Cause is kept as a Cause. New events are added to this table and to `drone-common` together.
+- A Code, Level or Cause the receiver doesn't know makes the Event invalid; both sides know the same codes (§2). New events are added to this table and to `drone-common` together, in a new protocol version.
 
 ### 5.5 Settings
 
@@ -785,17 +786,18 @@ Two shared crates, both `no_std` (no operating system or heap needed) so the fli
 
 ```
 common/src/
-  domain.rs    internal state: Sticks, ArmState, Command, LinkHealth, settings values
+  domain.rs    internal state: Sticks, ArmState, LinkHealth, settings values
   wire/        our protocol
     crc16.rs      (private)
     cobs.rs       (private)
     packet.rs     Packet: checked Flags / Type / Sequence / Payload / (Auth Tag) / CRC; PacketError
     stream.rs     COBS framing for byte streams: stream::encode, StreamDecoder
-    message.rs    enum Message { Hello(..), Sticks(..), Command(..), Reply(..), Event(..), ... } + encode / decode; MessageError
-    reply.rs      Reply { request_id, answer: Answer }: typed per request; Failure
-    event.rs      Event: one struct per event (Armed, BatteryLow { millivolts }, ...), Text, UnknownEvent
-    payload.rs    (private) reading and writing payload fields
-    codes.rs      MessageType, Status, per-request refusal codes, EventCode, StreamId, GroupId; Unknown<E>
+    message.rs    enum Message { Hello(..), Sticks(..), Arm(..), Reply(..), Event(..), ... } + encode / decode; MessageError;
+                  one list of message types makes Message, Answer and the type bytes; Request ties a request to its refusals
+    reply.rs      Reply { request_id, answer: Answer }: typed per request; Reply::to(&request, outcome); Failure
+    event.rs      Event: one struct per event (Armed, BatteryLow { millivolts }, ...), Text
+    payload.rs    (private) Wire: how each field reads and writes itself; Code: enums stored as numbers
+    codes.rs      HelloResult, EventLevel, FailsafeCause, per-request refusal codes (ArmRefusal, ...)
   crsf.rs      CRC-8, CRSF frame parsing, CRSF channels → Sticks
 ```
 
@@ -819,7 +821,8 @@ common/src/
 ### 7.1 Decisions
 
 - **Decoded messages own their data.** Variable-length fields (Event text, LogChunk data, setting group lists, …) are copied out of the receive buffer into a fixed-size array plus a length inside the message. Every message is therefore as big as the biggest one (~250 bytes), which is fine; in return messages can be kept, queued and handed to other threads without Rust lifetimes everywhere. Switching to borrowing from the receive buffer stays possible if copying ever matters.
-- **Decoded messages are typed, not raw bytes.** Codes are enums and bit fields are structs of named `bool`s; plain numbers stay numbers (versions, counts, µs, cm). Unknown codes are always kept as `Unknown<E>` (which can't hold a known value), so the receiver decides what to do with a newer peer's codes, e.g. answer "unknown type" or log them; unknown Hello option bits are kept too. Combinations the protocol forbids (e.g. a Reply OK with a Reason) are made impossible by the types, and rejected when decoding.
+- **Decoded messages are typed, not raw bytes.** Codes are enums and bit fields are structs of named `bool`s; plain numbers stay numbers (versions, counts, µs, cm). A code enum holds only the values the protocol defines: a number it doesn't know fails decoding (`MessageError::UnknownCode`, with the number, so it can be logged), because a peer that passed Hello knows the same codes. So every value that can be built can also be sent. The two exceptions hold only what the other side really didn't know: `UnknownType`, a type byte this build has no message for (to answer "unknown type"), and `UnknownOptions`, Hello option bits without a meaning yet. Combinations the protocol forbids (e.g. a Reply OK with a Reason) are made impossible by the types, and rejected when decoding.
+- **Rust types follow the implemented messages.** A message type from §5 that has no Rust message yet (e.g. LinkTest) is unknown to that build, and its codes are added together with it.
 - **Three kinds of checks:**
   1. **Incoming data** (known enum values, ranges, lengths): part of decoding, **always on, also in release builds**, because release is the build that flies. A decoded message is always a valid message.
   2. **Our own assumptions** ("this can never happen", e.g. the encoder's payload fits in 249 bytes): `debug_assert!`, debug builds only.

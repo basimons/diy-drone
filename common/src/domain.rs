@@ -5,9 +5,27 @@ pub const CHANNEL_MIN: u16 = 172;
 pub const CHANNEL_MID: u16 = 992;
 pub const CHANNEL_MAX: u16 = 1811;
 
-/// In raw CRSF units.
+/// The largest 11-bit value.
+pub const CHANNEL_LIMIT: u16 = 0x07FF;
+
+/// In raw CRSF units, each 0 … `CHANNEL_LIMIT`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct RcChannels(pub [u16; CHANNEL_COUNT]);
+pub struct RcChannels([u16; CHANNEL_COUNT]);
+
+impl RcChannels {
+    /// `None` if a value doesn't fit in 11 bits.
+    pub fn new(values: [u16; CHANNEL_COUNT]) -> Option<Self> {
+        return if values.iter().all(|&v| return v <= CHANNEL_LIMIT) {
+            Some(Self(values))
+        } else {
+            None
+        };
+    }
+
+    pub fn values(&self) -> [u16; CHANNEL_COUNT] {
+        return self.0;
+    }
+}
 
 impl Default for RcChannels {
     fn default() -> Self {
@@ -29,23 +47,4 @@ pub struct Sticks {
     pub roll: i16,     // 0 = centred
     pub pitch: i16,
     pub yaw: i16,
-}
-
-/// Something the pilot asks the drone to do (protocol.md §5.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Command {
-    Arm,
-    Disarm,
-    TakeOff,
-    Land,
-    GoHome, // not supported until GPS is fitted
-    Flip(Flip),
-    SteadyState, // hold still and accept only a few requests
-    ExitSteadyState,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Flip {
-    pub direction: u16, // 0 = forward, clockwise seen from above, a full circle over 0 … 65535
-    pub duration_ms: u16,
 }

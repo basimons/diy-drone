@@ -31,6 +31,7 @@ let ping = Message::Ping(Ping { timestamp: 1234 });
 let mut buf = [0u8; MAX_PACKET_LEN];
 
 // UDP
+// Hello and HelloReply are message 0 of a session: encode them with sequence 0.
 socket.send(ping.encode(sequence, &mut buf).as_bytes())?;
 let packet = Packet::parse(&datagram)?;            // PacketError: damaged, drop and count it
 let received = Message::decode(&packet)?;          // MessageError: intact but invalid, can be answered
@@ -52,13 +53,13 @@ while let Some(result) = decoder.next_packet(&mut chunk) {
 
 | Module | Public items | What it is |
 |--------|--------------|------------|
-| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Pong`, …), `CommandRequest`, `RequestId`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode` |
-| `wire::reply` | `Reply`, `Answer`, `Failure` | The drone's answer to a request, typed per request: only combinations the protocol allows can be built |
-| `wire::event` | `Event`, one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `Text`, `UnknownEvent`, `EventKind` | What the drone reports on its own; each event holds only its own data |
+| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Arm`, `Flip`, …), `Request`, `RequestId`, `Answer`, `UnknownType`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode` |
+| `wire::reply` | `Reply`, `Failure` | The drone's answer to a request, typed per request: only combinations the protocol allows can be built. `Reply::to(&request, outcome)` takes the Request ID and type from the request |
+| `wire::event` | `Event`, one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `Text`, `EventKind` | What the drone reports on its own; each event holds only its own data |
 | `wire::packet` | `Packet`, `PacketError`, `MAX_PACKET_LEN` | A checked packet: `parse`, `sequence`, `as_bytes` |
 | `wire::stream` | `encode`, `StreamDecoder`, `MAX_FRAME_LEN` | COBS framing; only needed on byte streams |
-| `wire::codes` | `MessageType`, `Status`, `ArmRefusal` (one refusal enum per request), `EventCode`, `Unknown<E>`, … | The numeric codes used inside messages; values a code doesn't know are kept as `Unknown` |
-| `domain` | `Sticks`, `Command`, `Flip`, `ArmState`, `RcChannels` | Protocol-neutral state: what the sticks say, what the pilot asks, armed or not |
+| `wire::codes` | `HelloResult`, `EventLevel`, `FailsafeCause`, `ArmRefusal` (one refusal enum per request), … | The numeric codes used inside messages. Each holds only the protocol's values, so whatever you build can be sent; an unknown number fails decoding with `MessageError::UnknownCode` |
+| `domain` | `Sticks`, `ArmState`, `RcChannels` | Protocol-neutral state: what the sticks say, armed or not |
 | `crsf` | CRSF constants and CRC-8 | CRSF (Crossfire), the radio protocol between the ELRS receiver and the FC |
 
 The CRC-16 and COBS code itself is private.

@@ -1,14 +1,74 @@
-//! Reading and writing the little-endian fields of a payload.
+//! Reading and writing the little-endian fields of a payload. `Wire` and `Code` are public but live in this private
+//! module, so other crates use the types that implement them without being able to call or implement them.
 
 use crate::wire::message::MessageError;
 use crate::wire::packet::MAX_PAYLOAD_LEN;
+
+/// A value with a fixed place in a payload: reads and writes itself.
+pub trait Wire: Sized {
+    fn read(r: &mut Reader) -> Result<Self, MessageError>;
+
+    fn write(&self, w: &mut Writer);
+}
+
+/// An enum stored on the wire as a number. A number that isn't one of its values doesn't decode: the protocol
+/// version changes when codes are added, so a peer that passed Hello never sends one (protocol.md §7.1).
+pub trait Code: Copy {
+    type Repr: Wire + Copy;
+
+    fn from_repr(value: Self::Repr) -> Result<Self, MessageError>;
+
+    fn repr(self) -> Self::Repr;
+}
+
+impl<C: Code> Wire for C {
+    fn read(r: &mut Reader) -> Result<Self, MessageError> {
+        return C::from_repr(C::Repr::read(r)?);
+    }
+
+    fn write(&self, w: &mut Writer) {
+        self.repr().write(w);
+    }
+}
+
+/// Implements `Wire` for a struct whose fields are written one after the other, in the order listed. The fields are
+/// listed once for both directions, and the struct literal makes the compiler check none is missing.
+macro_rules! impl_wire {
+    ($name:ident { $($field:ident),* }) => {
+        impl $crate::wire::payload::Wire for $name {
+            fn read(_r: &mut $crate::wire::payload::Reader) -> Result<Self, $crate::wire::message::MessageError> {
+                return Ok(Self { $($field: $crate::wire::payload::Wire::read(_r)?,)* });
+            }
+
+            fn write(&self, _w: &mut $crate::wire::payload::Writer) {
+                $($crate::wire::payload::Wire::write(&self.$field, _w);)*
+            }
+        }
+    };
+}
+pub(crate) use impl_wire;
+
+macro_rules! wire_number {
+    ($($ty:ty),*) => {$(
+        impl Wire for $ty {
+            fn read(r: &mut Reader) -> Result<Self, MessageError> {
+                return Ok(<$ty>::from_le_bytes(r.take()?));
+            }
+
+            fn write(&self, w: &mut Writer) {
+                w.put(&self.to_le_bytes());
+            }
+        }
+    )*};
+}
+wire_number!(u8, u16, i16, u32);
 
 pub(crate) fn invalid<E>(_: E) -> MessageError {
     return MessageError::InvalidValue;
 }
 
 /// Reads fields from the front of a payload.
-pub(crate) struct Reader<'a> {
+pub struct Reader<'a> {
     bytes: &'a [u8],
 }
 
@@ -27,29 +87,13 @@ impl<'a> Reader<'a> {
         return Ok(*head);
     }
 
-    pub(crate) fn u8(&mut self) -> Result<u8, MessageError> {
-        return Ok(self.take::<1>()?[0]);
-    }
-
-    pub(crate) fn u16(&mut self) -> Result<u16, MessageError> {
-        return Ok(u16::from_le_bytes(self.take()?));
-    }
-
-    pub(crate) fn i16(&mut self) -> Result<i16, MessageError> {
-        return Ok(i16::from_le_bytes(self.take()?));
-    }
-
-    pub(crate) fn u32(&mut self) -> Result<u32, MessageError> {
-        return Ok(u32::from_le_bytes(self.take()?));
-    }
-
     pub(crate) fn rest(&mut self) -> &'a [u8] {
         return core::mem::take(&mut self.bytes);
     }
 }
 
 /// Writes fields into a payload buffer.
-pub(crate) struct Writer {
+pub struct Writer {
     bytes: [u8; MAX_PAYLOAD_LEN],
     len: usize,
 }
@@ -71,22 +115,6 @@ impl Writer {
         );
         self.bytes[self.len..self.len + bytes.len()].copy_from_slice(bytes);
         self.len += bytes.len();
-    }
-
-    pub(crate) fn u8(&mut self, value: u8) {
-        self.put(&[value]);
-    }
-
-    pub(crate) fn u16(&mut self, value: u16) {
-        self.put(&value.to_le_bytes());
-    }
-
-    pub(crate) fn i16(&mut self, value: i16) {
-        self.put(&value.to_le_bytes());
-    }
-
-    pub(crate) fn u32(&mut self, value: u32) {
-        self.put(&value.to_le_bytes());
     }
 
     pub(crate) fn written(&self) -> &[u8] {

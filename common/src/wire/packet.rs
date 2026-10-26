@@ -1,7 +1,6 @@
 //! A packet: one message on the wire, before any stream framing (protocol.md §4.1).
 //! `flags | type | sequence | payload | CRC-16`, at most 255 bytes. Over UDP one datagram is one packet.
 
-use crate::wire::codes::MessageType;
 use crate::wire::crc16::crc16;
 
 const HEADER_LEN: usize = 4; // flags, type, sequence
@@ -63,18 +62,11 @@ impl<'a> Packet<'a> {
     }
 
     /// Writes a packet into `out`. Our own message encoder is the only caller.
-    pub(crate) fn write(
-        message_type: MessageType,
-        sequence: u16,
-        payload: &[u8],
-        out: &'a mut [u8; MAX_PACKET_LEN],
-    ) -> Self {
-        // `Unknown` only comes out of decoding; sending it would decode as a different type.
-        debug_assert!(!matches!(message_type, MessageType::Unknown(_)), "{message_type:?}");
+    pub(crate) fn write(message_type: u8, sequence: u16, payload: &[u8], out: &'a mut [u8; MAX_PACKET_LEN]) -> Self {
         debug_assert!(payload.len() <= MAX_PAYLOAD_LEN, "payload of {} bytes", payload.len());
         let crc_at = HEADER_LEN + payload.len();
         out[0] = 0; // flags
-        out[1] = u8::from(message_type);
+        out[1] = message_type;
         out[2..HEADER_LEN].copy_from_slice(&sequence.to_le_bytes());
         out[HEADER_LEN..crc_at].copy_from_slice(payload);
         let crc = crc16(&out[..crc_at]);
@@ -93,8 +85,8 @@ impl<'a> Packet<'a> {
         return self.bytes;
     }
 
-    pub(crate) fn message_type(&self) -> MessageType {
-        return MessageType::from(self.bytes[1]);
+    pub(crate) fn message_type(&self) -> u8 {
+        return self.bytes[1];
     }
 
     pub(crate) fn payload(&self) -> &'a [u8] {
