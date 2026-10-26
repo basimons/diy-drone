@@ -1,57 +1,165 @@
-//! One-byte codes from protocol.md §5.
+//! The codes of protocol.md §5. Every code type keeps values it doesn't know as `Unknown`, so a newer peer's
+//! codes still arrive and the caller decides what to do with them (e.g. log them).
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct UnknownCode<T = u8>(pub T);
+use core::convert::Infallible;
+use core::fmt::Debug;
+use core::hash::Hash;
+use core::marker::PhantomData;
+use core::num::NonZeroU16;
 
-/// Defines a code enum stored as `$repr` (`u8` or `u16`), with conversions to and from it.
-/// Plain: `TryFrom<$repr>` rejects unknown values with `UnknownCode`.
-/// `with Unknown`: adds an `Unknown(value)` variant and an infallible `From<$repr>`, for codes the drone must
-/// still see to answer them.
+/// A code type, with the wire value it is stored as.
+pub trait Code: Copy {
+    type Repr: Copy + Eq + Hash + Debug;
+
+    fn is_known(value: Self::Repr) -> bool;
+}
+
+/// A value that is not one of `E`'s codes. Can't hold a known value, so every code has one representation.
+pub struct Unknown<E: Code> {
+    value: E::Repr,
+    code: PhantomData<E>,
+}
+
+impl<E: Code> Unknown<E> {
+    /// `None` if `value` is a known code.
+    pub fn new(value: E::Repr) -> Option<Self> {
+        return if E::is_known(value) {
+            None
+        } else {
+            Some(Self::unchecked(value))
+        };
+    }
+
+    /// Only for `From`, after none of the known codes matched.
+    fn unchecked(value: E::Repr) -> Self {
+        return Self {
+            value,
+            code: PhantomData,
+        };
+    }
+
+    pub fn value(self) -> E::Repr {
+        return self.value;
+    }
+}
+
+// Written out because derives would demand the bounds of `E` instead of `E::Repr`.
+impl<E: Code> Clone for Unknown<E> {
+    fn clone(&self) -> Self {
+        return *self;
+    }
+}
+
+impl<E: Code> Copy for Unknown<E> {}
+
+impl<E: Code> PartialEq for Unknown<E> {
+    fn eq(&self, other: &Self) -> bool {
+        return self.value == other.value;
+    }
+}
+
+impl<E: Code> Eq for Unknown<E> {}
+
+impl<E: Code> Hash for Unknown<E> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.value.hash(state);
+    }
+}
+
+impl<E: Code> Debug for Unknown<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        return write!(f, "Unknown({:?})", self.value);
+    }
+}
+
+/// Why a request was refused. The reason codes are numbered per request (protocol.md §5.4) and are never 0,
+/// because Reason 0 means "no reason".
+pub trait Refusal: Copy {
+    fn from_reason(reason: u16) -> Option<Self>;
+
+    fn reason(self) -> u16;
+}
+
+/// For requests that are never refused (e.g. Disarm): `Failure::Refused` can't be built for them.
+impl Refusal for Infallible {
+    fn from_reason(_: u16) -> Option<Self> {
+        return None;
+    }
+
+    fn reason(self) -> u16 {
+        match self {}
+    }
+}
+
+/// Defines a code enum with an `Unknown` variant and conversions to and from its wire value `$repr`.
+/// `$repr` is `u8`, or `NonZeroU16` for two-byte codes where 0 means "none" on the wire.
 macro_rules! wire_enum {
-    (@decode $name:ident: $repr:ident { $($variant:ident = $value:literal,)* }) => {
-        impl TryFrom<$repr> for $name {
-            type Error = UnknownCode<$repr>;
-
-            fn try_from(value: $repr) -> Result<Self, UnknownCode<$repr>> {
-                return match value {
-                    $($value => Ok(Self::$variant),)*
-                    _ => Err(UnknownCode(value)),
-                };
-            }
-        }
+    (@value u8, $value:literal) => {
+        $value
     };
-    (@decode $name:ident: $repr:ident $unknown:ident { $($variant:ident = $value:literal,)* }) => {
-        impl From<$repr> for $name {
-            fn from(value: $repr) -> Self {
-                return match value {
-                    $($value => Self::$variant,)*
-                    other => Self::$unknown(other),
-                };
-            }
-        }
+    (@value NonZeroU16, $value:literal) => {
+        const { NonZeroU16::new($value).expect("0 means none") }
     };
-    ($(#[$meta:meta])* $name:ident: $repr:ident $(with $unknown:ident)? { $($variant:ident = $value:literal,)* }) => {
+    (@match u8, $value:expr) => {
+        $value
+    };
+    (@match NonZeroU16, $value:expr) => {
+        $value.get()
+    };
+    ($(#[$meta:meta])* $name:ident: $repr:ident { $($variant:ident = $value:literal,)* }) => {
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum $name {
             $($variant,)*
-            $($unknown($repr),)? // only produced by decoding, never holds a known code
+            Unknown(Unknown<$name>),
+        }
+
+        impl Code for $name {
+            type Repr = $repr;
+
+            fn is_known(value: $repr) -> bool {
+                return !matches!(Self::from(value), Self::Unknown(_));
+            }
+        }
+
+        impl From<$repr> for $name {
+            fn from(value: $repr) -> Self {
+                return match wire_enum!(@match $repr, value) {
+                    $($value => Self::$variant,)*
+                    _ => Self::Unknown(Unknown::unchecked(value)),
+                };
+            }
         }
 
         impl From<$name> for $repr {
             fn from(code: $name) -> $repr {
                 return match code {
-                    $($name::$variant => $value,)*
-                    $($name::$unknown(value) => value,)?
+                    $($name::$variant => wire_enum!(@value $repr, $value),)*
+                    $name::Unknown(unknown) => unknown.value,
                 };
             }
         }
-
-        wire_enum!(@decode $name: $repr $($unknown)? { $($variant = $value,)* });
     };
 }
 
-wire_enum!(MessageType: u8 with Unknown {
+/// Defines a refusal enum: a two-byte code that is also a `Refusal`.
+macro_rules! refusal {
+    ($(#[$meta:meta])* $name:ident { $($variant:ident = $value:literal,)* }) => {
+        wire_enum!($(#[$meta])* $name: NonZeroU16 { $($variant = $value,)* });
+
+        impl Refusal for $name {
+            fn from_reason(reason: u16) -> Option<Self> {
+                return NonZeroU16::new(reason).map(Self::from);
+            }
+
+            fn reason(self) -> u16 {
+                return NonZeroU16::from(self).get();
+            }
+        }
+    };
+}
+
+wire_enum!(MessageType: u8 {
     Hello = 0x01,
     HelloReply = 0x02,
     Ping = 0x03,
@@ -95,7 +203,7 @@ wire_enum!(LinkTestDirection: u8 {
 });
 
 wire_enum!(
-    /// Status of a Reply.
+    /// Status byte of a Reply. In Rust a Reply holds an `Answer` instead, which can't combine them wrongly.
     Status: u8 {
         Ok = 0,
         Refused = 1,
@@ -115,7 +223,7 @@ wire_enum!(EventLevel: u8 {
 
 wire_enum!(
     /// Units per stream are in protocol.md §5.6.
-    StreamId: u8 with Unknown {
+    StreamId: u8 {
         Status = 1,
         Battery = 2,
         Attitude = 3,
@@ -127,30 +235,8 @@ wire_enum!(
 );
 
 wire_enum!(
-    /// Why a Reply has its Status (protocol.md §5.4). The high byte groups them. On the wire 0 means "no
-    /// reason"; that is `None` in `Reply`, never a code.
-    ReasonCode: u16 {
-        ThrottleNotLow = 0x0101, // Arm: throttle must be at the bottom
-        ImuNotReady = 0x0102,
-        BatteryLow = 0x0103,
-        NotArmed = 0x0201,
-        NotFlying = 0x0202,
-        TooLow = 0x0203, // e.g. Flip close to the ground
-        NotAllowedInSteadyState = 0x0204,
-        NoGps = 0x0301, // GoHome
-        UnknownStream = 0x0401,
-        RateNotPossible = 0x0402,
-        UnknownSettingsGroup = 0x0403,
-        ValueOutOfRange = 0x0404,
-        UnknownLog = 0x0405,
-        OffsetPastEnd = 0x0406, // ReadLog beyond the end of the log
-    }
-);
-
-wire_enum!(
-    /// What an Event is about (protocol.md §5.4). The high byte groups them. On the wire 0 means "no code";
-    /// that is `None` in `Event`, never a code.
-    EventCode: u16 {
+    /// What an Event is about (protocol.md §5.4). The high byte groups them. "No code" is `None` in `Event`.
+    EventCode: NonZeroU16 {
         Armed = 0x0101,
         Disarmed = 0x0102,
         LinkLost = 0x0201,
@@ -163,75 +249,46 @@ wire_enum!(
     }
 );
 
-/// A type byte that is not a known message type. Can't hold a known byte, unlike `MessageType::Unknown`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct UnknownType(u8);
+refusal!(ArmRefusal {
+    ThrottleNotLow = 1,
+    ImuNotReady = 2,
+    BatteryLow = 3,
+});
 
-impl UnknownType {
-    pub fn from_byte(byte: u8) -> Option<Self> {
-        return match MessageType::from(byte) {
-            MessageType::Unknown(_) => Some(Self(byte)),
-            _ => None,
-        };
-    }
+refusal!(TakeOffRefusal {
+    NotArmed = 1,
+    BatteryLow = 2,
+});
 
-    pub fn byte(self) -> u8 {
-        return self.0;
-    }
-}
+refusal!(LandRefusal { NotFlying = 1, });
 
-/// A known message type that is not a request, so a Reply can't answer it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NotARequest(pub MessageType);
+refusal!(FlipRefusal {
+    NotArmed = 1,
+    NotFlying = 2,
+    TooLow = 3,
+});
 
-/// Defines `RequestType` as the listed `MessageType`s plus `Unknown`, with conversions both ways.
-macro_rules! request_types {
-    ($($name:ident,)*) => {
-        /// What a Reply can answer: a request (protocol.md §5.0), or a type the drone doesn't know.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub enum RequestType {
-            $($name,)*
-            Unknown(UnknownType),
-        }
+refusal!(SteadyStateRefusal { NotFlying = 1, });
 
-        impl From<RequestType> for MessageType {
-            fn from(request: RequestType) -> Self {
-                return match request {
-                    $(RequestType::$name => MessageType::$name,)*
-                    RequestType::Unknown(unknown) => MessageType::Unknown(unknown.0),
-                };
-            }
-        }
+refusal!(LinkTestRefusal {
+    NotAllowedNow = 1, // e.g. while flying (protocol.md §5.1a)
+});
 
-        impl TryFrom<MessageType> for RequestType {
-            type Error = NotARequest;
+refusal!(SetSettingsRefusal {
+    UnknownGroup = 1,
+    ValueOutOfRange = 2,
+});
 
-            fn try_from(message_type: MessageType) -> Result<Self, NotARequest> {
-                // Re-reading the byte turns a hand-made `MessageType::Unknown(0x20)` into `Arm`.
-                return match MessageType::from(u8::from(message_type)) {
-                    $(MessageType::$name => Ok(RequestType::$name),)*
-                    MessageType::Unknown(byte) => Ok(RequestType::Unknown(UnknownType(byte))),
-                    other => Err(NotARequest(other)),
-                };
-            }
-        }
-    };
-}
+refusal!(GetSettingsRefusal { UnknownGroup = 1, });
 
-request_types!(
-    LinkTest,
-    Arm,
-    Disarm,
-    TakeOff,
-    Land,
-    GoHome,
-    Flip,
-    SteadyState,
-    ExitSteadyState,
-    SetSettings,
-    GetSettings,
-    RequestOnce,
-    Subscribe,
-    ListLogs,
-    ReadLog,
-);
+refusal!(RequestOnceRefusal { UnknownStream = 1, });
+
+refusal!(SubscribeRefusal {
+    UnknownStream = 1,
+    RateNotPossible = 2,
+});
+
+refusal!(ReadLogRefusal {
+    UnknownLog = 1,
+    OffsetPastEnd = 2,
+});

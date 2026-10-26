@@ -1,4 +1,5 @@
 //! Errors print readably and work as `core::error::Error`, e.g. with `?` into `anyhow` in the client.
+use drone_common::wire::codes::{MessageType, Unknown};
 use drone_common::wire::message::MessageError;
 use drone_common::wire::packet::PacketError;
 
@@ -27,7 +28,14 @@ fn packet_errors_print_readably() {
 #[test]
 fn message_errors_print_readably() {
     let cases = [
-        (MessageError::UnknownType(0xEE), "unknown message type 0xee"),
+        (
+            MessageError::UnknownType(Unknown::new(0xEE).unwrap()),
+            "unknown message type 0xee",
+        ),
+        (
+            MessageError::NotImplemented(MessageType::LinkTest),
+            "message type LinkTest is not implemented yet",
+        ),
         (
             MessageError::WrongLength,
             "payload length doesn't match the message type",

@@ -52,10 +52,10 @@ while let Some(result) = decoder.next_packet(&mut chunk) {
 
 | Module | Public items | What it is |
 |--------|--------------|------------|
-| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Reply`, `Event`, …), `CommandRequest`, `RequestId`, `EventText`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode` |
+| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Reply`, `Event`, …), `CommandRequest`, `RequestId`, `Answer`, `Failure`, `EventText`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode` |
 | `wire::packet` | `Packet`, `PacketError`, `MAX_PACKET_LEN` | A checked packet: `parse`, `sequence`, `as_bytes` |
 | `wire::stream` | `encode`, `StreamDecoder`, `MAX_FRAME_LEN` | COBS framing; only needed on byte streams |
-| `wire::codes` | `MessageType`, `RequestType`, `Status`, `ReasonCode`, `EventLevel`, `EventCode`, … | The numeric codes used inside messages |
+| `wire::codes` | `MessageType`, `Status`, `ArmRefusal` (one refusal enum per request), `EventCode`, `Unknown<E>`, … | The numeric codes used inside messages; values a code doesn't know are kept as `Unknown` |
 | `domain` | `Sticks`, `Command`, `Flip`, `ArmState`, `RcChannels` | Protocol-neutral state: what the sticks say, what the pilot asks, armed or not |
 | `crsf` | CRSF constants and CRC-8 | CRSF (Crossfire), the radio protocol between the ELRS receiver and the FC |
 

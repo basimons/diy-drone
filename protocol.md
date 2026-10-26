@@ -390,26 +390,33 @@ where:
 - **Request ID (RID):** 2 bytes, u16. The request this answers.
 - **Answers Type (AT):** 1 byte. The Type of that request.
 - **Status (St):** 1 byte. One of: 0 = OK, 1 = refused, 2 = unknown type, 3 = malformed, 4 = not supported, 5 = busy.
-- **Reason (Rsn):** 2 bytes, u16. Why the Status, from the table below. 0 = no reason given. Any other value not in the table makes the Reply invalid.
+- **Reason (Rsn):** 2 bytes, u16. Only with Status refused, and then never 0: why the request was refused. Reason codes are numbered **per request type** (the Answers Type says which table applies). Every other Status has Reason 0.
 
-Reason codes (the high byte groups them):
+What a Reply may say depends on the request:
 
-| Code | Reason | Typical request |
-|------|--------|-----------------|
-| `0x0101` | Throttle not low | Arm |
-| `0x0102` | IMU (motion sensor) not ready | Arm |
-| `0x0103` | Battery low | Arm, TakeOff |
-| `0x0201` | Not armed | TakeOff, Flip |
-| `0x0202` | Not flying | Land, Flip |
-| `0x0203` | Too low | Flip |
-| `0x0204` | Not allowed in steady state | most requests while in SteadyState |
-| `0x0301` | No GPS | GoHome |
-| `0x0401` | Unknown stream | Subscribe, RequestOnce |
-| `0x0402` | Rate not possible | Subscribe |
-| `0x0403` | Unknown settings group | GetSettings, SetSettings |
-| `0x0404` | Value out of range | SetSettings |
-| `0x0405` | Unknown log | ReadLog |
-| `0x0406` | Offset past the end | ReadLog |
+| Request | Success | Refusal reasons |
+|---------|---------|-----------------|
+| Arm | Reply OK | 1 = throttle not low, 2 = IMU (motion sensor) not ready, 3 = battery low |
+| Disarm | Reply OK | never refused: disarming must always work |
+| TakeOff | Reply OK | 1 = not armed, 2 = battery low |
+| Land | Reply OK | 1 = not flying |
+| GoHome | Reply OK | none yet ("not supported" until GPS is fitted) |
+| Flip | Reply OK | 1 = not armed, 2 = not flying, 3 = too low |
+| SteadyState | Reply OK | 1 = not flying |
+| ExitSteadyState | Reply OK | never refused |
+| SetSettings | Reply OK | 1 = unknown group, 2 = value out of range |
+| Subscribe | Reply OK | 1 = unknown stream, 2 = rate not possible |
+| LinkTest | LinkTestResult, never Reply OK | 1 = not allowed now |
+| GetSettings | Settings, never Reply OK | 1 = unknown group |
+| RequestOnce | StreamData, never Reply OK | 1 = unknown stream |
+| ListLogs | LogList, never Reply OK | none |
+| ReadLog | LogChunk, never Reply OK | 1 = unknown log, 2 = offset past the end |
+
+Rules:
+
+- Status unknown type (2) only answers a Type the drone doesn't know, always with Reason 0. A known Type is never answered with it.
+- Any other combination is invalid: OK to a request whose success is a data message, OK or busy with a Reason, refused without one, refused for a request that is never refused, an Answers Type that is not a request (e.g. Sticks).
+- A Status or Reason the receiver doesn't know (from a newer peer) is **kept, not rejected**: the receiver decides what to do with it, e.g. log it.
 
 **Event** (`0x41`, D→C, never an answer, so no Request ID):
 
@@ -426,7 +433,7 @@ Reason codes (the high byte groups them):
 where:
 
 - **Level (L):** 1 byte. One of: 0 = debug, 1 = info, 2 = warning, 3 = error.
-- **Code (C):** 2 bytes, u16. Machine-readable event code from the table below. 0 = none. Any other value not in the table makes the Event invalid.
+- **Code (C):** 2 bytes, u16. Machine-readable event code from the table below. 0 = none. A code the receiver doesn't know is kept, so the Event and its Text still arrive.
 - **Text:** variable length, UTF-8, the rest of the payload (up to 246 bytes). Where "any string from the drone" goes.
 
 Event codes (the high byte groups them):
@@ -443,7 +450,7 @@ Event codes (the high byte groups them):
 | `0x0402` | Loop overrun (the flight loop missed its deadline) |
 | `0x0403` | IMU error |
 
-New codes are added to these tables and to `drone-common` together; both sides must agree, which the protocol version in Hello guarantees.
+New codes are added to these tables and to `drone-common` together. Unknown codes (from a newer peer) are kept for the receiver to handle, never silently dropped, so a mismatch shows up in the logs.
 
 ### 5.5 Settings
 
@@ -746,7 +753,7 @@ common/src/
     packet.rs     Packet: checked Flags / Type / Sequence / Payload / (Auth Tag) / CRC; PacketError
     stream.rs     COBS framing for byte streams: stream::encode, StreamDecoder
     message.rs    enum Message { Hello(..), Sticks(..), Command(..), Reply(..), ... } + encode / decode; MessageError
-    codes.rs      MessageType, Status, ReasonCode, EventCode, StreamId, GroupId
+    codes.rs      MessageType, Status, per-request refusal codes, EventCode, StreamId, GroupId; Unknown<E>
   crsf.rs      CRC-8, CRSF frame parsing, CRSF channels → Sticks
 ```
 
@@ -770,7 +777,7 @@ common/src/
 ### 7.1 Decisions
 
 - **Decoded messages own their data.** Variable-length fields (Event text, LogChunk data, setting group lists, …) are copied out of the receive buffer into a fixed-size array plus a length inside the message. Every message is therefore as big as the biggest one (~250 bytes), which is fine; in return messages can be kept, queued and handed to other threads without Rust lifetimes everywhere. Switching to borrowing from the receive buffer stays possible if copying ever matters.
-- **Decoded messages are typed, not raw bytes.** Codes are enums and bit fields are structs of named `bool`s; plain numbers stay numbers (versions, counts, µs, cm). Unknown codes or bits are only kept (`Unknown(byte)`, `unknown` bits) where the receiver must still see them to answer, e.g. an unknown message type or an unsupported Hello option.
+- **Decoded messages are typed, not raw bytes.** Codes are enums and bit fields are structs of named `bool`s; plain numbers stay numbers (versions, counts, µs, cm). Unknown codes are always kept as `Unknown<E>` (which can't hold a known value), so the receiver decides what to do with a newer peer's codes, e.g. answer "unknown type" or log them; unknown Hello option bits are kept too. Combinations the protocol forbids (e.g. a Reply OK with a Reason) are made impossible by the types, and rejected when decoding.
 - **Three kinds of checks:**
   1. **Incoming data** (known enum values, ranges, lengths): part of decoding, **always on, also in release builds**, because release is the build that flies. A decoded message is always a valid message.
   2. **Our own assumptions** ("this can never happen", e.g. the encoder's payload fits in 249 bytes): `debug_assert!`, debug builds only.

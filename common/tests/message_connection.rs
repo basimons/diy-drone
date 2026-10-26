@@ -133,11 +133,18 @@ fn hello_reply_every_result() {
 }
 
 #[test]
-fn hello_reply_rejects_unknown_result() {
-    for byte in [3, 0xFF] {
-        let decoded = decode(HELLO_REPLY, &[1, byte, 0, 0, 0, 0]);
-        assert_eq!(decoded, Err(MessageError::InvalidValue), "result {byte}");
-    }
+fn hello_reply_keeps_unknown_result() {
+    // A newer drone may answer with a result this client doesn't know; the caller decides.
+    let decoded = decode(HELLO_REPLY, &[1, 0xFF, 0, 0, 0, 0]);
+    let result = HelloResult::Unknown(drone_common::wire::codes::Unknown::new(0xFF).unwrap());
+    assert_eq!(
+        decoded,
+        Ok(Message::HelloReply(HelloReply {
+            protocol_version: 1,
+            result,
+            options: Options::default()
+        }))
+    );
 }
 
 #[test]
@@ -177,5 +184,17 @@ fn rejects_wrong_payload_length() {
 #[test]
 fn unknown_type_is_reported_with_its_byte() {
     // The drone answers with Reply "unknown type", so it must see the byte.
-    assert_eq!(decode(0xEE, &[]), Err(MessageError::UnknownType(0xEE)));
+    let unknown = drone_common::wire::codes::Unknown::new(0xEE).unwrap();
+    assert_eq!(decode(0xEE, &[]), Err(MessageError::UnknownType(unknown)));
+}
+
+#[test]
+fn known_type_without_a_message_yet_is_not_implemented() {
+    let decoded = decode(0x05, &[]); // LinkTest
+    assert_eq!(
+        decoded,
+        Err(MessageError::NotImplemented(
+            drone_common::wire::codes::MessageType::LinkTest
+        ))
+    );
 }

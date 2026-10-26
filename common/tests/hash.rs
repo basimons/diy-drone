@@ -38,12 +38,11 @@ fn public_types_are_hashable() {
         key_type::<Status>(),
         key_type::<EventLevel>(),
         key_type::<StreamId>(),
-        key_type::<ReasonCode>(),
         key_type::<EventCode>(),
-        key_type::<UnknownCode>(),
-        key_type::<RequestType>(),
-        key_type::<UnknownType>(),
-        key_type::<NotARequest>(),
+        key_type::<Answer>(),
+        key_type::<Failure<ArmRefusal>>(),
+        key_type::<Unknown<MessageType>>(),
+        key_type::<ArmRefusal>(),
         key_type::<UnknownOptions>(),
     ];
     assert!(names.iter().all(|name| return !name.is_empty()));

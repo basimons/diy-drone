@@ -1,21 +1,32 @@
 //! The messages of protocol.md §5, as owned Rust types with encode/decode.
 
+use core::convert::Infallible;
+use core::num::NonZeroU16;
+
 use crate::domain::{Command, Flip, Sticks};
-use crate::wire::codes::{EventCode, EventLevel, HelloResult, MessageType, ReasonCode, RequestType, Status};
+use crate::wire::codes::{
+    ArmRefusal, EventCode, EventLevel, FlipRefusal, GetSettingsRefusal, HelloResult, LandRefusal, LinkTestRefusal,
+    MessageType, ReadLogRefusal, Refusal, RequestOnceRefusal, SetSettingsRefusal, Status, SteadyStateRefusal,
+    SubscribeRefusal, TakeOffRefusal, Unknown,
+};
 use crate::wire::packet::{MAX_PACKET_LEN, MAX_PAYLOAD_LEN, Packet};
 
 /// Why an intact packet is not a valid message. Unlike a `PacketError`, the sender can be told (protocol.md §5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MessageError {
-    UnknownType(u8),
-    WrongLength,  // payload length doesn't match the message type
-    InvalidValue, // a field holds a value the protocol doesn't allow
+    UnknownType(Unknown<MessageType>),
+    NotImplemented(MessageType), // a known type this build has no Rust message for yet
+    WrongLength,                 // payload length doesn't match the message type
+    InvalidValue,                // a field holds a value the protocol doesn't allow
 }
 
 impl core::fmt::Display for MessageError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         return match self {
-            MessageError::UnknownType(byte) => write!(f, "unknown message type {byte:#04x}"),
+            MessageError::UnknownType(unknown) => write!(f, "unknown message type {:#04x}", unknown.value()),
+            MessageError::NotImplemented(message_type) => {
+                write!(f, "message type {message_type:?} is not implemented yet")
+            }
             MessageError::WrongLength => f.write_str("payload length doesn't match the message type"),
             MessageError::InvalidValue => f.write_str("a field holds a value the protocol doesn't allow"),
         };
@@ -110,9 +121,116 @@ pub struct CommandRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Reply {
     pub request_id: RequestId,
-    pub answers: RequestType,
-    pub status: Status,
-    pub reason: Option<ReasonCode>,
+    pub answer: Answer,
+}
+
+/// Why a request failed. On the wire: the Status, plus the Reason for `Refused`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Failure<R: Refusal> {
+    Refused(R),
+    Malformed,
+    NotSupported,
+    Busy,
+    Unknown { status: Unknown<Status>, reason: u16 }, // a status this build doesn't know, kept for the caller
+}
+
+impl<R: Refusal> Failure<R> {
+    fn to_wire(self) -> (Status, u16) {
+        return match self {
+            Failure::Refused(refusal) => (Status::Refused, refusal.reason()),
+            Failure::Malformed => (Status::Malformed, 0),
+            Failure::NotSupported => (Status::NotSupported, 0),
+            Failure::Busy => (Status::Busy, 0),
+            Failure::Unknown { status, reason } => (Status::Unknown(status), reason),
+        };
+    }
+
+    fn from_wire(status: Status, reason: u16) -> Result<Self, MessageError> {
+        return match (status, reason) {
+            (Status::Refused, _) => R::from_reason(reason)
+                .map(Failure::Refused)
+                .ok_or(MessageError::InvalidValue),
+            (Status::Malformed, 0) => Ok(Failure::Malformed),
+            (Status::NotSupported, 0) => Ok(Failure::NotSupported),
+            (Status::Busy, 0) => Ok(Failure::Busy),
+            (Status::Unknown(status), _) => Ok(Failure::Unknown { status, reason }),
+            _ => Err(MessageError::InvalidValue), // Ok or UnknownType, or a Reason where none belongs
+        };
+    }
+}
+
+fn outcome_to_wire<R: Refusal>(outcome: Result<(), Failure<R>>) -> (Status, u16) {
+    return match outcome {
+        Ok(()) => (Status::Ok, 0),
+        Err(failure) => failure.to_wire(),
+    };
+}
+
+fn outcome_from_wire<R: Refusal>(status: Status, reason: u16) -> Result<Result<(), Failure<R>>, MessageError> {
+    return match (status, reason) {
+        (Status::Ok, 0) => Ok(Ok(())),
+        _ => Failure::from_wire(status, reason).map(Err),
+    };
+}
+
+/// Defines `Answer`: per request, what its Reply can say.
+/// `ok`: success is a Reply with Status OK. `failure_only`: success is a data message, so a Reply always failed.
+macro_rules! answers {
+    (ok { $($ok:ident($ok_refusal:ty),)* } failure_only { $($failed:ident($failed_refusal:ty),)* }) => {
+        /// What a Reply says, typed per request (protocol.md §5.4), so a Reply can't combine Answers Type,
+        /// Status and Reason in a way the protocol doesn't allow.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum Answer {
+            $($ok(Result<(), Failure<$ok_refusal>>),)*
+            $($failed(Failure<$failed_refusal>),)*
+            UnknownType(Unknown<MessageType>), // always Status "unknown type", never a Reason
+        }
+
+        impl Answer {
+            /// Answers Type, Status and Reason.
+            fn to_wire(self) -> (MessageType, (Status, u16)) {
+                return match self {
+                    $(Answer::$ok(outcome) => (MessageType::$ok, outcome_to_wire(outcome)),)*
+                    $(Answer::$failed(failure) => (MessageType::$failed, failure.to_wire()),)*
+                    Answer::UnknownType(unknown) => (MessageType::Unknown(unknown), (Status::UnknownType, 0)),
+                };
+            }
+
+            fn from_wire(answers: MessageType, status: Status, reason: u16) -> Result<Self, MessageError> {
+                return match answers {
+                    $(MessageType::$ok => Ok(Answer::$ok(outcome_from_wire(status, reason)?)),)*
+                    $(MessageType::$failed => Ok(Answer::$failed(Failure::from_wire(status, reason)?)),)*
+                    MessageType::Unknown(unknown) => match (status, reason) {
+                        (Status::UnknownType, 0) => Ok(Answer::UnknownType(unknown)),
+                        _ => Err(MessageError::InvalidValue),
+                    },
+                    _ => Err(MessageError::InvalidValue), // not a request
+                };
+            }
+        }
+    };
+}
+
+answers! {
+    ok {
+        Arm(ArmRefusal),
+        Disarm(Infallible), // never refused: disarming must always work
+        TakeOff(TakeOffRefusal),
+        Land(LandRefusal),
+        GoHome(Infallible), // "not supported" until GPS is fitted
+        Flip(FlipRefusal),
+        SteadyState(SteadyStateRefusal),
+        ExitSteadyState(Infallible),
+        SetSettings(SetSettingsRefusal),
+        Subscribe(SubscribeRefusal),
+    }
+    failure_only {
+        LinkTest(LinkTestRefusal),       // success is LinkTestResult
+        GetSettings(GetSettingsRefusal), // success is Settings
+        RequestOnce(RequestOnceRefusal), // success is StreamData
+        ListLogs(Infallible),            // success is LogList
+        ReadLog(ReadLogRefusal),         // success is LogChunk
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -258,14 +376,15 @@ impl Message {
                 }
             }
             Message::Reply(m) => {
+                let (answers, (status, reason)) = m.answer.to_wire();
                 w.u16(m.request_id.0);
-                w.u8(u8::from(MessageType::from(m.answers)));
-                w.u8(u8::from(m.status));
-                w.u16(m.reason.map_or(0, u16::from));
+                w.u8(u8::from(answers));
+                w.u8(u8::from(status));
+                w.u16(reason);
             }
             Message::Event(m) => {
                 w.u8(u8::from(m.level));
-                w.u16(m.code.map_or(0, u16::from));
+                w.u16(m.code.map_or(0, |code| return NonZeroU16::from(code).get()));
                 w.put(m.text.as_str().as_bytes());
             }
         }
@@ -287,7 +406,7 @@ impl Message {
             }),
             MessageType::HelloReply => Message::HelloReply(HelloReply {
                 protocol_version: r.u8()?,
-                result: HelloResult::try_from(r.u8()?).map_err(invalid)?,
+                result: HelloResult::from(r.u8()?),
                 options: Options::from_bits(r.u32()?),
             }),
             MessageType::Ping => Message::Ping(Ping { timestamp: r.u32()? }),
@@ -318,32 +437,22 @@ impl Message {
             }),
             MessageType::Reply => Message::Reply(Reply {
                 request_id: r.request_id()?,
-                answers: RequestType::try_from(MessageType::from(r.u8()?)).map_err(invalid)?,
-                status: Status::try_from(r.u8()?).map_err(invalid)?,
-                reason: optional_code(r.u16()?)?,
+                answer: Answer::from_wire(MessageType::from(r.u8()?), Status::from(r.u8()?), r.u16()?)?,
             }),
             MessageType::Event => Message::Event(Event {
-                level: EventLevel::try_from(r.u8()?).map_err(invalid)?,
-                code: optional_code(r.u16()?)?,
+                level: EventLevel::from(r.u8()?),
+                code: NonZeroU16::new(r.u16()?).map(EventCode::from),
                 text: EventText::new(core::str::from_utf8(r.rest()).map_err(invalid)?)
                     .ok_or(MessageError::WrongLength)?,
             }),
-            // Types without a Rust message yet are treated as unknown until they are added.
-            other => return Err(MessageError::UnknownType(u8::from(other))),
+            MessageType::Unknown(unknown) => return Err(MessageError::UnknownType(unknown)),
+            other => return Err(MessageError::NotImplemented(other)),
         };
         if !r.bytes.is_empty() {
             return Err(MessageError::WrongLength);
         }
         return Ok(message);
     }
-}
-
-/// A two-byte code where 0 means "none".
-fn optional_code<T: TryFrom<u16>>(value: u16) -> Result<Option<T>, MessageError> {
-    return match value {
-        0 => Ok(None),
-        code => T::try_from(code).map(Some).map_err(invalid),
-    };
 }
 
 fn invalid<E>(_: E) -> MessageError {
