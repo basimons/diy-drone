@@ -369,7 +369,7 @@ where:
 
 GoHome is reserved until GPS is fitted; until then the drone answers "not supported". Every command gets a Reply (§5.0).
 
-**SteadyState** asks the drone to hold still where it is (level, holding height; without GPS it may drift sideways) and, while it does, to accept only a small set of requests. **ExitSteadyState** returns to normal flying. The client keeps sending Sticks as its heartbeat; while in steady state the drone ignores their values. Which requests are allowed in steady state (e.g. LinkTest, GetSettings, RequestOnce, Subscribe, Land, Disarm, ExitSteadyState) is drone-side logic, to be decided later.
+**SteadyState** asks the drone to hold still where it is (level, holding height; without GPS it may drift sideways) and, while it does, to accept only a small set of requests. **ExitSteadyState** returns to normal flying. The client keeps sending Sticks as its heartbeat; while in steady state the drone ignores their values. Which requests are allowed in steady state (e.g. LinkTest, GetSettings, RequestOnce, Subscribe, Land, Disarm, ExitSteadyState) is drone-side logic, to be decided later; other requests get a Reply "not allowed now" (§5.4).
 
 ### 5.4 Replies and events
 
@@ -389,7 +389,7 @@ where:
 
 - **Request ID (RID):** 2 bytes, u16. The request this answers.
 - **Answers Type (AT):** 1 byte. The Type of that request.
-- **Status (St):** 1 byte. One of: 0 = OK, 1 = refused, 2 = unknown type, 3 = malformed, 4 = not supported, 5 = busy.
+- **Status (St):** 1 byte. One of: 0 = OK, 1 = refused, 2 = unknown type, 3 = malformed, 4 = not supported, 5 = busy, 6 = not allowed now (allowed in general, but not in the drone's current state, e.g. in steady state).
 - **Reason (Rsn):** 2 bytes, u16. Only with Status refused, and then never 0: why the request was refused. Reason codes are numbered **per request type** (the Answers Type says which table applies). Every other Status has Reason 0.
 
 What a Reply may say depends on the request:

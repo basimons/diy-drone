@@ -211,6 +211,7 @@ wire_enum!(
         Malformed = 3,
         NotSupported = 4,
         Busy = 5,
+        NotAllowedNow = 6, // e.g. in steady state (protocol.md §5.3)
     }
 );
 

@@ -23,6 +23,7 @@ pub enum Failure<R: Refusal> {
     Malformed,
     NotSupported,
     Busy,
+    NotAllowedNow, // allowed in general, but not in the drone's current state (e.g. steady state)
     Unknown { status: Unknown<Status>, reason: u16 }, // a status this build doesn't know, kept for the caller
 }
 
@@ -33,6 +34,7 @@ impl<R: Refusal> Failure<R> {
             Failure::Malformed => (Status::Malformed, 0),
             Failure::NotSupported => (Status::NotSupported, 0),
             Failure::Busy => (Status::Busy, 0),
+            Failure::NotAllowedNow => (Status::NotAllowedNow, 0),
             Failure::Unknown { status, reason } => (Status::Unknown(status), reason),
         };
     }
@@ -45,6 +47,7 @@ impl<R: Refusal> Failure<R> {
             (Status::Malformed, 0) => Ok(Failure::Malformed),
             (Status::NotSupported, 0) => Ok(Failure::NotSupported),
             (Status::Busy, 0) => Ok(Failure::Busy),
+            (Status::NotAllowedNow, 0) => Ok(Failure::NotAllowedNow),
             (Status::Unknown(status), _) => Ok(Failure::Unknown { status, reason }),
             _ => Err(MessageError::InvalidValue), // Ok or UnknownType, or a Reason where none belongs
         };

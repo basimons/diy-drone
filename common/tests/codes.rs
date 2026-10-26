@@ -105,6 +105,7 @@ fn reply_statuses() {
             (Malformed, 3),
             (NotSupported, 4),
             (Busy, 5),
+            (NotAllowedNow, 6),
         ],
         Unknown,
     );

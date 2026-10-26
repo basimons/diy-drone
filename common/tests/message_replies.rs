@@ -81,8 +81,12 @@ fn refused_with_its_reason() {
 
 #[test]
 fn failures_without_a_reason() {
-    let cases: [(Failure<Infallible>, u8); 3] =
-        [(Failure::Malformed, 3), (Failure::NotSupported, 4), (Failure::Busy, 5)];
+    let cases: [(Failure<Infallible>, u8); 4] = [
+        (Failure::Malformed, 3),
+        (Failure::NotSupported, 4),
+        (Failure::Busy, 5),
+        (Failure::NotAllowedNow, 6), // e.g. in steady state
+    ];
     for (failure, status) in cases {
         check_round_trip(reply(Answer::Disarm(Err(failure))), REPLY, &payload(0x21, status, 0));
         check_round_trip(reply(Answer::GoHome(Err(failure))), REPLY, &payload(0x24, status, 0));
@@ -164,6 +168,7 @@ fn rejects_impossible_combinations() {
         ("Busy with a reason", payload(0x20, 5, 1)),
         ("Malformed with a reason", payload(0x20, 3, 1)),
         ("Not supported with a reason", payload(0x20, 4, 1)),
+        ("Not allowed now with a reason", payload(0x25, 6, 1)),
         ("Disarm refused", payload(0x21, 1, 1)),
         ("GoHome refused", payload(0x24, 1, 1)),
         ("ExitSteadyState refused", payload(0x27, 1, 1)),
