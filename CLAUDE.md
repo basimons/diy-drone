@@ -29,6 +29,10 @@ Rust lives in `~/.cargo/bin`, which may not be on `PATH` in a fresh shell (`scri
   (e.g. a message's struct, type byte and refusal reasons in the `messages!` list). Reuse or re-export instead of
   defining a second copy (`domain::Sticks` re-exports the Sticks message), and never keep two lists that must
   stay in step by hand.
+- Code reads at a glance. Watch for awkward shapes, when writing and when reviewing: nested wrappers
+  (`Result<Result<(), Failure>, E>`, values like `Ok(Err(..))`), match arms that are only right because of the arms
+  above them, two types that together mean one thing. Fix the type (e.g. one flat `Outcome` enum) so each match line
+  reads as one rule. Reviews report these alongside bugs.
 
 ## Crate boundaries (protocol.md §7)
 
