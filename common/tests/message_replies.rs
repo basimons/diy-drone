@@ -9,7 +9,7 @@ const EVENT: u8 = 0x41;
 
 fn reply(answers: RequestType, status: Status, reason: u16) -> Message {
     return Message::Reply(Reply {
-        request_id: RequestId::new(0x0102).unwrap(),
+        request_id: RequestId(0x0102),
         answers,
         status,
         reason: ReasonCode(reason),
@@ -54,8 +54,7 @@ fn reply_without_a_reason() {
 
 #[test]
 fn reply_rejects_bad_values() {
-    let cases: [(&str, [u8; 6]); 5] = [
-        ("Request ID 0", [0, 0, 0x20, 0, 0, 0]),
+    let cases: [(&str, [u8; 6]); 4] = [
         ("unknown status", [1, 0, 0x20, 6, 0, 0]),
         ("answers Sticks, not a request", [1, 0, 0x10, 0, 0, 0]),
         ("answers Hello, not a request", [1, 0, 0x01, 0, 0, 0]),
@@ -68,6 +67,17 @@ fn reply_rejects_bad_values() {
             "{case}"
         );
     }
+}
+
+#[test]
+fn reply_with_request_id_0() {
+    let message = Message::Reply(Reply {
+        request_id: RequestId(0),
+        answers: RequestType::Land,
+        status: Status::Busy,
+        reason: ReasonCode::NONE,
+    });
+    check_round_trip(message, REPLY, &[0, 0, 0x23, 5, 0, 0]);
 }
 
 #[test]

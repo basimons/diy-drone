@@ -1,7 +1,7 @@
 mod support;
 
 use drone_common::domain::{Command, Flip};
-use drone_common::wire::message::{CommandRequest, Message, MessageError, RequestId};
+use drone_common::wire::message::{CommandRequest, Message, RequestId};
 use support::*;
 
 const FLIP: u8 = 0x25;
@@ -19,16 +19,9 @@ const SIMPLE: [(Command, u8); 7] = [
 
 fn request(request_id: u16, command: Command) -> Message {
     return Message::Command(CommandRequest {
-        request_id: RequestId::new(request_id).unwrap(),
+        request_id: RequestId(request_id),
         command,
     });
-}
-
-#[test]
-fn request_id_is_never_0() {
-    assert_eq!(RequestId::new(0), None);
-    assert_eq!(RequestId::new(1).map(|id| return id.get()), Some(1));
-    assert_eq!(RequestId::new(u16::MAX).map(|id| return id.get()), Some(u16::MAX));
 }
 
 #[test]
@@ -48,15 +41,17 @@ fn flip() {
 }
 
 #[test]
-fn commands_reject_request_id_0() {
-    // protocol.md §5.0: Request ID 0 means "not a request".
-    for (_, message_type) in SIMPLE {
-        assert_eq!(decode_payload(message_type, &[0, 0]), Err(MessageError::InvalidValue));
+fn every_request_id_is_valid() {
+    // protocol.md §5.0: the client's counter simply wraps, 0 included.
+    for request_id in [0, 1, 0x8000, u16::MAX] {
+        let bytes = request_id.to_le_bytes();
+        check_round_trip(request(request_id, Command::Arm), 0x20, &bytes);
+        let flip = Command::Flip(Flip {
+            direction: 0,
+            duration_ms: 0,
+        });
+        check_round_trip(request(request_id, flip), FLIP, &[bytes[0], bytes[1], 0, 0, 0, 0]);
     }
-    assert_eq!(
-        decode_payload(FLIP, &[0, 0, 0, 0, 0, 0]),
-        Err(MessageError::InvalidValue)
-    );
 }
 
 #[test]

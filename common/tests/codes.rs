@@ -67,6 +67,7 @@ fn message_types_match_protocol_table() {
             (RequestOnce, 0x60),
             (Subscribe, 0x61),
             (StreamData, 0x62),
+            (StreamUpdate, 0x63),
             (ListLogs, 0x70),
             (LogList, 0x71),
             (ReadLog, 0x72),

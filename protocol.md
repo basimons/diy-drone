@@ -117,7 +117,7 @@ How packets travel depends on the link:
 | `0x20–0x3F` | Commands | `0x20` Arm, `0x21` Disarm, `0x22` TakeOff, `0x23` Land, `0x24` GoHome, `0x25` Flip, `0x26` SteadyState, `0x27` ExitSteadyState |
 | `0x40–0x4F` | Replies & events | `0x40` Reply, `0x41` Event |
 | `0x50–0x5F` | Settings | `0x50` SetSettings, `0x51` GetSettings, `0x52` Settings |
-| `0x60–0x6F` | Data streams | `0x60` RequestOnce, `0x61` Subscribe, `0x62` StreamData |
+| `0x60–0x6F` | Data streams | `0x60` RequestOnce, `0x61` Subscribe, `0x62` StreamData, `0x63` StreamUpdate |
 | `0x70–0x7F` | Logs | `0x70` ListLogs, `0x71` LogList, `0x72` ReadLog, `0x73` LogChunk |
 
 Direction: C→D = client (laptop) to drone, D→C = drone to client. The diagrams below show the **payload** only; every message is wrapped in the packet of §4.1.
@@ -125,10 +125,10 @@ Direction: C→D = client (laptop) to drone, D→C = drone to client. The diagra
 ### 5.0 Requests and answers
 
 - A **request** is any C→D message except Sticks, Hello and Ping: commands, LinkTest, SetSettings, GetSettings, Subscribe, RequestOnce, ListLogs, ReadLog.
-- Every request payload **starts with a Request ID (u16)**, the client picks it by counting up its requests (skipping 0). It tells the drone "this is the same request as before" and lets the client match answers to requests. It is separate from the packet Sequence.
+- Every request payload **starts with a Request ID (u16)**, the client picks it by counting up its requests (wrapping 65535 → 0; every value is valid). It tells the drone "this is the same request as before" and lets the client match answers to requests. It is separate from the packet Sequence.
 - Every request gets **exactly one answer**: its data message (LinkTestResult, Settings, StreamData, LogList, LogChunk, which echo the Request ID), or a Reply. Errors (unknown stream/group/log ID, bad rate, refused) are always a Reply.
 - **Resending:** if no answer arrives within a timeout, the client resends the request with the **same Request ID** (and a new Sequence). The drone remembers the last 16 Request IDs it handled; a repeat is answered again without executing twice.
-- Data sent without a request (default and subscribed streams) uses Request ID 0.
+- Data the drone sends without being asked (default and subscribed streams) is a **StreamUpdate**, which has no Request ID. Whether data answers a request is told by its message type, not by a special Request ID value.
 - The Request ID is 2 bytes (not 1) so that many requests in flight (e.g. pipelined ReadLog over WiFi) never wrap into IDs the drone still remembers.
 
 Example:
@@ -252,7 +252,7 @@ Measures how much data the link can carry, per direction (ELRS splits radio time
 
 where:
 
-- **Request ID (RID):** 2 bytes, u16, RID != 0.
+- **Request ID (RID):** 2 bytes, u16.
 - **Direction (Dir):** 1 byte. One of: 0 = drone sends, 1 = client sends.
 - **Duration (Dur):** 2 bytes, u16, in ms. How long the sender keeps sending (up to ~65 s).
 - **Filler Size (FS):** 1 byte, 0 … 247. Bytes of filler per LinkTestData message, to see how message size affects throughput.
@@ -347,7 +347,7 @@ Values are stick positions, not distances; the flight code decides what they mea
 
 where:
 
-- **Request ID (RID):** 2 bytes, u16, RID != 0. See §5.0.
+- **Request ID (RID):** 2 bytes, u16. See §5.0.
 
 **Flip** (`0x25`, C→D):
 
@@ -363,7 +363,7 @@ where:
 
 where:
 
-- **Request ID (RID):** 2 bytes, u16, RID != 0.
+- **Request ID (RID):** 2 bytes, u16.
 - **Direction (Dir):** 2 bytes, u16. 0 = forward, increasing clockwise seen from above, one full circle over 0 … 65535.
 - **Duration (Dur):** 2 bytes, u16. How long the flip takes, in ms (quick ≈ 300, slow ≈ 1500).
 
@@ -449,7 +449,7 @@ where:
 
 where:
 
-- **Request ID (RID):** 2 bytes, u16, RID != 0.
+- **Request ID (RID):** 2 bytes, u16.
 - **Setting Group list:** variable length, one or more [Setting Group] back to back, until the end of the payload.
 
 **SetSettings is all-or-nothing.** The drone checks every group first. Any problem → nothing changes, one Reply with the reason. All good → every change takes effect at the same moment, between two flight-loop runs, and one Reply with OK.
@@ -469,7 +469,7 @@ where:
 
 where:
 
-- **Request ID (RID):** 2 bytes, u16, RID != 0.
+- **Request ID (RID):** 2 bytes, u16.
 - **Group ID list:** variable length, one or more u8 group IDs.
 
 **Settings** (`0x52`, D→C, the answer to GetSettings):
@@ -512,7 +512,7 @@ Each kind of live data is a numbered **stream** (1-byte ID, 0 never used; up to 
 
 where:
 
-- **Request ID (RID):** 2 bytes, u16, RID != 0.
+- **Request ID (RID):** 2 bytes, u16.
 - **Stream ID (SID):** 1 byte, u8.
 - **Rate:** 2 bytes, u16, in Hz. 0 = stop.
 
@@ -530,7 +530,7 @@ Answered with a Reply (OK, or e.g. unknown stream / rate not possible).
 
 where:
 
-- **Request ID (RID):** 2 bytes, u16, RID != 0.
+- **Request ID (RID):** 2 bytes, u16.
 - **Stream ID (SID):** 1 byte, u8.
 
 Answered with one StreamData carrying this Request ID (or a Reply on error).
@@ -550,13 +550,30 @@ Answered with one StreamData carrying this Request ID (or a Reply on error).
 
 where:
 
-- **Request ID (RID):** 2 bytes, u16. The RequestOnce it answers, or 0 for default/subscribed data.
+- **Request ID (RID):** 2 bytes, u16. The RequestOnce it answers.
 - **Stream ID (SID):** 1 byte, u8.
 - **Data:** variable length, layout per stream.
 
+**StreamUpdate** (`0x63`, D→C): stream data nobody asked for right now: the default set and subscribed streams. Same as StreamData, without the Request ID.
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|   Stream ID   |                 Data (variable)               :
++-+-+-+-+-+-+-+-+                                               +
+:                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Stream ID (SID):** 1 byte, u8.
+- **Data:** variable length, layout per stream (the same as in StreamData).
+
 Rules:
 
-- After a successful handshake, the drone starts a **default set** (the glance screen) without being asked: status, battery, attitude, height, link quality, at a few Hz. Exact rates: to be decided.
+- After a successful handshake, the drone starts a **default set** (the glance screen) without being asked, sent as StreamUpdate: status, battery, attitude, height, link quality, at a few Hz. Exact rates: to be decided.
 - Streams can be subscribed, changed and stopped during flight.
 - Stream data uses **fixed-point whole numbers** (exact, small), e.g. mV, centidegrees, cm.
 
@@ -588,7 +605,7 @@ The drone records detailed data (sensors, PID internals, motor outputs) to its S
 
 where:
 
-- **Request ID (RID):** 2 bytes, u16, RID != 0.
+- **Request ID (RID):** 2 bytes, u16.
 
 **LogList** (`0x71`, D→C):
 
@@ -639,7 +656,7 @@ where:
 
 where:
 
-- **Request ID (RID):** 2 bytes, u16, RID != 0.
+- **Request ID (RID):** 2 bytes, u16.
 - **Log ID (LID):** 1 byte, u8.
 - **Offset (Off):** 4 bytes, u32. Byte position to start reading from.
 
@@ -721,12 +738,12 @@ common/src/
 - **Decoded messages own their data.** Variable-length fields (Event text, LogChunk data, setting group lists, …) are copied out of the receive buffer into a fixed-size array plus a length inside the message. Every message is therefore as big as the biggest one (~250 bytes), which is fine; in return messages can be kept, queued and handed to other threads without Rust lifetimes everywhere. Switching to borrowing from the receive buffer stays possible if copying ever matters.
 - **Decoded messages are typed, not raw bytes.** Codes are enums and bit fields are structs of named `bool`s; plain numbers stay numbers (versions, counts, µs, cm). Unknown codes or bits are only kept (`Unknown(byte)`, `unknown` bits) where the receiver must still see them to answer, e.g. an unknown message type or an unsupported Hello option.
 - **Three kinds of checks:**
-  1. **Incoming data** (known enum values, ranges, Request ID != 0, lengths): part of decoding, **always on, also in release builds**, because release is the build that flies. A decoded message is always a valid message.
+  1. **Incoming data** (known enum values, ranges, lengths): part of decoding, **always on, also in release builds**, because release is the build that flies. A decoded message is always a valid message.
   2. **Our own assumptions** ("this can never happen", e.g. the encoder's payload fits in 249 bytes): `debug_assert!`, debug builds only.
   3. **Extra logging:** a runtime switch (e.g. a verbose flag), so it can be turned on in the build that flies.
 
   Debug builds may *add* logs and asserts but never *decide* differently from release builds.
-- **Wrapping arithmetic is explicit.** Sequence numbers and session-clock times use `wrapping_add` / `wrapping_sub`. Plain `+` panics on overflow in debug builds but silently wraps in release, which would make the two behave differently.
+- **Wrapping arithmetic is explicit.** Sequence numbers, Request IDs and session-clock times use `wrapping_add` / `wrapping_sub`. Plain `+` panics on overflow in debug builds but silently wraps in release, which would make the two behave differently.
 
 ## 8. Open risks
 

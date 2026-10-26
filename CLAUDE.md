@@ -24,7 +24,7 @@ Rust lives in `~/.cargo/bin`, which may not be on `PATH` in a fresh shell (`scri
   non-obvious edge cases). No comments restating the name or signature.
 - Enum variant comments go on the same line as the variant (`ZeroByte, // encoded data contained 0x00`).
 - Line length is 120 (`rustfmt.toml`).
-- Sequence numbers and session-clock times use `wrapping_add` / `wrapping_sub`, never plain `+`/`-`.
+- Sequence numbers, Request IDs and session-clock times use `wrapping_add` / `wrapping_sub`, never plain `+`/`-`.
 
 ## Crate boundaries (protocol.md §7)
 

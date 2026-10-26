@@ -1,7 +1,5 @@
 //! The messages of protocol.md §5, as owned Rust types with encode/decode.
 
-use core::num::NonZeroU16;
-
 use crate::domain::{Command, Flip, Sticks};
 use crate::wire::codes::{EventCode, EventLevel, HelloResult, MessageType, ReasonCode, RequestType, Status};
 use crate::wire::packet::{MAX_PACKET_LEN, MAX_PAYLOAD_LEN, Packet};
@@ -74,19 +72,10 @@ pub struct Pong {
     pub send_time: u32,
 }
 
-/// Starts every request; matches answers to requests and detects resends (protocol.md §5.0). Never 0.
+/// Starts every request; matches answers to requests and detects resends (protocol.md §5.0). Every value is
+/// valid: the client counts up with `wrapping_add`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct RequestId(NonZeroU16);
-
-impl RequestId {
-    pub fn new(id: u16) -> Option<Self> {
-        return NonZeroU16::new(id).map(Self);
-    }
-
-    pub fn get(self) -> u16 {
-        return self.0.get();
-    }
-}
+pub struct RequestId(pub u16);
 
 /// One of the commands of protocol.md §5.3; each has its own message type on the wire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -242,14 +231,14 @@ impl Message {
                 w.i16(m.yaw);
             }
             Message::Command(m) => {
-                w.u16(m.request_id.get());
+                w.u16(m.request_id.0);
                 if let Command::Flip(flip) = m.command {
                     w.u16(flip.direction);
                     w.u16(flip.duration_ms);
                 }
             }
             Message::Reply(m) => {
-                w.u16(m.request_id.get());
+                w.u16(m.request_id.0);
                 w.u8(u8::from(MessageType::from(m.answers)));
                 w.u8(u8::from(m.status));
                 w.u16(m.reason.0);
@@ -370,7 +359,7 @@ impl Reader<'_> {
     }
 
     fn request_id(&mut self) -> Result<RequestId, MessageError> {
-        return RequestId::new(self.u16()?).ok_or(MessageError::InvalidValue);
+        return Ok(RequestId(self.u16()?));
     }
 
     /// A command whose payload is only its Request ID.
