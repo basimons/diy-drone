@@ -416,10 +416,9 @@ Reason codes (the high byte groups them):
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|     Level     |              Code             |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        Text (variable)                        :
+|     Level     |              Code             | Text (var.)   :
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+               +
 :                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
@@ -746,7 +745,7 @@ common/src/
     cobs.rs       (private)
     packet.rs     Packet: checked Flags / Type / Sequence / Payload / (Auth Tag) / CRC; PacketError
     stream.rs     COBS framing for byte streams: stream::encode, StreamDecoder
-    message.rs    enum Message { Hello(..), Sticks(..), Flip(..), ... } + encode / decode; MessageError
+    message.rs    enum Message { Hello(..), Sticks(..), Command(..), Reply(..), ... } + encode / decode; MessageError
     codes.rs      MessageType, Status, ReasonCode, EventCode, StreamId, GroupId
   crsf.rs      CRC-8, CRSF frame parsing, CRSF channels → Sticks
 ```

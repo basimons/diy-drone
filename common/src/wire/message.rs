@@ -28,22 +28,44 @@ impl core::error::Error for MessageError {}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Options {
     pub authentication: bool,
-    pub unknown: u32, // bits without a meaning yet, kept so the drone can answer "option not supported"
+    pub unknown: UnknownOptions,
 }
 
+const KNOWN_OPTIONS: u32 = AUTHENTICATION;
 const AUTHENTICATION: u32 = 1 << 0;
+
+/// Option bits without a meaning yet, kept so the drone can answer "option not supported". Can't hold a known
+/// bit, so every `Options` encodes and decodes back unchanged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct UnknownOptions(u32);
+
+impl UnknownOptions {
+    /// `None` if `bits` includes a known option.
+    pub fn new(bits: u32) -> Option<Self> {
+        return if bits & KNOWN_OPTIONS == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        };
+    }
+
+    pub fn bits(self) -> u32 {
+        return self.0;
+    }
+}
 
 impl Options {
     fn from_bits(bits: u32) -> Self {
         return Self {
             authentication: bits & AUTHENTICATION != 0,
-            unknown: bits & !AUTHENTICATION,
+            unknown: UnknownOptions(bits & !KNOWN_OPTIONS),
         };
     }
 
     fn bits(&self) -> u32 {
+        debug_assert_eq!(self.unknown.0 & KNOWN_OPTIONS, 0, "UnknownOptions holds a known bit");
         let authentication = if self.authentication { AUTHENTICATION } else { 0 };
-        return authentication | (self.unknown & !AUTHENTICATION);
+        return authentication | self.unknown.0;
     }
 }
 
@@ -116,12 +138,10 @@ impl EventText {
         if text.len() > MAX_EVENT_TEXT_LEN {
             return None;
         }
-        let event_text = Self {
+        return Some(Self {
             bytes: core::array::from_fn(|i| return text.as_bytes().get(i).copied().unwrap_or(0)),
             len: text.len(),
-        };
-        debug_assert_eq!(event_text.as_str(), text);
-        return Some(event_text);
+        });
     }
 
     pub fn as_str(&self) -> &str {

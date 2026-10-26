@@ -36,7 +36,7 @@ fn hello() {
         protocol_version: 7,
         options: Options {
             authentication: true,
-            unknown: 0,
+            unknown: UnknownOptions::default(),
         },
     });
     check(hello, HELLO, &[0x07, 0x01, 0x00, 0x00, 0x00]);
@@ -49,8 +49,9 @@ fn hello_keeps_unknown_option_bits() {
     let decoded = decode(HELLO, &payload).unwrap();
     let options = Options {
         authentication: true,
-        unknown: 0x8000_0020,
+        unknown: UnknownOptions::new(0x8000_0020).unwrap(),
     };
+    assert_eq!(options.unknown.bits(), 0x8000_0020);
     assert_eq!(
         decoded,
         Message::Hello(Hello {
@@ -59,6 +60,19 @@ fn hello_keeps_unknown_option_bits() {
         })
     );
     assert_eq!(encode_packet(&decoded, 0), packet(0, HELLO, 0, &payload));
+}
+
+#[test]
+fn unknown_options_never_hold_a_known_bit() {
+    // Otherwise encoding would drop the bit, and the message wouldn't decode back the same.
+    assert_eq!(UnknownOptions::new(0x0000_0001), None); // authentication
+    assert_eq!(UnknownOptions::new(0xFFFF_FFFF), None);
+    assert_eq!(UnknownOptions::new(0).map(|o| return o.bits()), Some(0));
+    assert_eq!(
+        UnknownOptions::new(0xFFFF_FFFE).map(|o| return o.bits()),
+        Some(0xFFFF_FFFE)
+    );
+    assert_eq!(UnknownOptions::default().bits(), 0);
 }
 
 #[test]

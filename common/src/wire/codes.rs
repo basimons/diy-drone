@@ -210,10 +210,7 @@ macro_rules! request_types {
                 // Re-reading the byte turns a hand-made `MessageType::Unknown(0x20)` into `Arm`.
                 return match MessageType::from(u8::from(message_type)) {
                     $(MessageType::$name => Ok(RequestType::$name),)*
-                    MessageType::Unknown(byte) => {
-                        debug_assert!(UnknownType::from_byte(byte).is_some(), "{byte:#04x} is known");
-                        Ok(RequestType::Unknown(UnknownType(byte)))
-                    }
+                    MessageType::Unknown(byte) => Ok(RequestType::Unknown(UnknownType(byte))),
                     other => Err(NotARequest(other)),
                 };
             }
