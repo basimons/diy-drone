@@ -1,27 +1,15 @@
 //! The envelope around every message (protocol.md §4.1) and its COBS framing (§4.2).
 
-use crate::wire::cobs::{self, CobsError};
+use crate::wire::cobs;
 use crate::wire::codes::MessageType;
 use crate::wire::crc16::crc16;
+use crate::wire::frame::{FrameError, MAX_FRAME_LEN};
 
 const HEADER_LEN: usize = 4; // flags, type, sequence
 const CRC_LEN: usize = 2;
 
 pub const MAX_ENVELOPE_LEN: usize = 255;
 pub const MAX_PAYLOAD_LEN: usize = MAX_ENVELOPE_LEN - HEADER_LEN - CRC_LEN;
-/// COBS-encoded maximum envelope plus the `0x00` delimiter.
-pub const MAX_FRAME_LEN: usize = cobs::max_encoded_len(MAX_ENVELOPE_LEN) + 1;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EnvelopeError {
-    PayloadTooLong,
-    UnknownMessageType, // `MessageType::Unknown` can be received but not sent
-    TooShort,
-    TooLong,
-    BadCrc,
-    UnsupportedFlags, // only allowed once authentication exists
-    Cobs(CobsError),
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Envelope {
@@ -32,17 +20,15 @@ pub struct Envelope {
 }
 
 impl Envelope {
-    pub fn new(message_type: MessageType, sequence: u16, payload: &[u8]) -> Result<Self, EnvelopeError> {
-        if let MessageType::Unknown(_) = message_type {
-            return Err(EnvelopeError::UnknownMessageType);
-        }
+    pub fn new(message_type: MessageType, sequence: u16, payload: &[u8]) -> Self {
+        // `Unknown` only comes out of decoding; sending it would decode as a different type.
+        debug_assert!(!matches!(message_type, MessageType::Unknown(_)), "{message_type:?}");
+        debug_assert!(payload.len() <= MAX_PAYLOAD_LEN, "payload of {} bytes", payload.len());
         return Self::from_parts(message_type, sequence, payload);
     }
 
-    fn from_parts(message_type: MessageType, sequence: u16, payload: &[u8]) -> Result<Self, EnvelopeError> {
-        if payload.len() > MAX_PAYLOAD_LEN {
-            return Err(EnvelopeError::PayloadTooLong);
-        }
+    /// `payload` must be at most `MAX_PAYLOAD_LEN` bytes.
+    fn from_parts(message_type: MessageType, sequence: u16, payload: &[u8]) -> Self {
         let mut envelope = Self {
             message_type,
             sequence,
@@ -50,7 +36,7 @@ impl Envelope {
             payload_len: payload.len() as u8,
         };
         envelope.payload[..payload.len()].copy_from_slice(payload);
-        return Ok(envelope);
+        return envelope;
     }
 
     pub fn message_type(&self) -> MessageType {
@@ -78,25 +64,25 @@ impl Envelope {
         return crc_at + CRC_LEN;
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, EnvelopeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, FrameError> {
         if bytes.len() < HEADER_LEN + CRC_LEN {
-            return Err(EnvelopeError::TooShort);
+            return Err(FrameError::TooShort);
         }
         if bytes.len() > MAX_ENVELOPE_LEN {
-            return Err(EnvelopeError::TooLong);
+            return Err(FrameError::TooLong);
         }
         let (body, crc) = bytes.split_at(bytes.len() - CRC_LEN);
         if crc16(body) != u16::from_le_bytes([crc[0], crc[1]]) {
-            return Err(EnvelopeError::BadCrc);
+            return Err(FrameError::BadCrc);
         }
         if body[0] != 0 {
-            return Err(EnvelopeError::UnsupportedFlags);
+            return Err(FrameError::UnsupportedFlags);
         }
-        return Self::from_parts(
+        return Ok(Self::from_parts(
             MessageType::from(body[1]),
             u16::from_le_bytes([body[2], body[3]]),
             &body[HEADER_LEN..],
-        );
+        ));
     }
 
     /// COBS-encoded and with the `0x00` delimiter, ready to send. Returns the number of bytes written.
@@ -107,63 +93,5 @@ impl Envelope {
             cobs::encode(&raw[..raw_len], &mut out[..MAX_FRAME_LEN - 1]).expect("MAX_FRAME_LEN fits any envelope");
         out[len] = 0;
         return len + 1;
-    }
-
-    /// `frame` is COBS-encoded, without its `0x00` delimiter.
-    fn decode_frame(frame: &[u8]) -> Result<Self, EnvelopeError> {
-        let mut raw = [0; MAX_ENVELOPE_LEN];
-        let len = cobs::decode(frame, &mut raw).map_err(|e| {
-            return match e {
-                CobsError::OutputTooSmall => EnvelopeError::TooLong,
-                other => EnvelopeError::Cobs(other),
-            };
-        })?;
-        return Self::decode(&raw[..len]);
-    }
-}
-
-/// Splits a received byte stream into envelopes at the `0x00` delimiters.
-pub struct FrameReader {
-    buffer: [u8; MAX_FRAME_LEN - 1], // the delimiter is not stored
-    len: usize,
-    overflowed: bool,
-}
-
-impl FrameReader {
-    pub fn new() -> Self {
-        return Self {
-            buffer: [0; MAX_FRAME_LEN - 1],
-            len: 0,
-            overflowed: false,
-        };
-    }
-
-    /// Returns a result when `byte` completes a frame. Empty frames (repeated delimiters) are skipped.
-    pub fn push(&mut self, byte: u8) -> Option<Result<Envelope, EnvelopeError>> {
-        if byte == 0 {
-            let result = if self.overflowed {
-                Some(Err(EnvelopeError::TooLong))
-            } else if self.len == 0 {
-                None
-            } else {
-                Some(Envelope::decode_frame(&self.buffer[..self.len]))
-            };
-            self.len = 0;
-            self.overflowed = false;
-            return result;
-        }
-        if self.len == self.buffer.len() {
-            self.overflowed = true;
-        } else {
-            self.buffer[self.len] = byte;
-            self.len += 1;
-        }
-        return None;
-    }
-}
-
-impl Default for FrameReader {
-    fn default() -> Self {
-        return Self::new();
     }
 }

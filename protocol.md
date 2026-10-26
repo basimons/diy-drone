@@ -686,19 +686,20 @@ Two shared crates, both `no_std` (no operating system or heap needed) so the fli
 
 ```
 common/src/
-  domain/      internal state: Sticks, ArmState, Command, LinkHealth, settings values
+  domain.rs    internal state: Sticks, ArmState, Command, LinkHealth, settings values
   wire/        our protocol
-    crc16.rs
-    cobs.rs
-    envelope.rs   Flags / Type / Sequence / (Auth Tag) / CRC
-    message.rs    enum Message { Hello(..), Sticks(..), Flip(..), ... } + encode/decode
+    crc16.rs      (private)
+    cobs.rs       (private)
+    envelope.rs   (private) Flags / Type / Sequence / (Auth Tag) / CRC
+    frame.rs      FrameReader: received bytes → messages (Push, Received, FrameError, MAX_FRAME_LEN)
+    message.rs    enum Message { Hello(..), Sticks(..), Flip(..), ... } + Message::encode_frame
     codes.rs      MessageType, Status, ReasonCode, EventCode, StreamId, GroupId
-  crsf/        CRC-8, CRSF frame parsing, CRSF channels → Sticks
+  protocol.rs  CRC-8, CRSF frame parsing, CRSF channels → Sticks
 ```
 
-- The **internal state** types the adapters produce (sticks, pending command, settings changes, link health). They are protocol-neutral: CRSF units (172–1811) only exist inside `crsf/`, which converts them.
+- The **internal state** types the adapters produce (sticks, pending command, settings changes, link health). They are protocol-neutral: CRSF units (172–1811) only exist inside the CRSF code (`protocol.rs`), which converts them.
 - A Rust type for every message in §5 with encode/decode. Messages are shaped like the wire; where a message *is* a domain concept (Sticks), it holds the domain type instead of a copy of it.
-- Envelope encode/decode, COBS, CRC-16, fixed 255-byte buffers.
+- Envelope encode/decode, COBS, CRC-16, fixed 255-byte buffers. These are private: callers only see `Message::encode_frame` (message + sequence number → bytes) and `FrameReader` (bytes → sequence number + message, or the reason it was dropped). The sequence counter itself belongs to the caller.
 - Settings group and stream layouts; reason and event codes.
 - Tests: round-trip every message; corrupted/truncated frames are rejected; COBS edge cases (zeros, 254-byte runs, max size).
 

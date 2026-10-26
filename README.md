@@ -7,7 +7,7 @@ Hardware, wiring and goals are in [drone-design.md](drone-design.md). The client
 
 | Folder | Crate | Runs on | What it does |
 |--------|-------|---------|--------------|
-| `common/` | `drone-common` | anywhere (no OS needed) | Shared domain types, our link protocol's encoding (COBS, CRC-16) and the CRSF byte protocol |
+| `common/` | `drone-common` | anywhere (no OS needed) | Shared domain types, our link protocol's messages and framing, and the CRSF byte protocol ([common/README.md](common/README.md)) |
 | `client/` | `drone-client` | Windows, macOS, Linux | Reads the gamepad, encodes CRSF frames, sends them over USB serial to the ELRS transmitter module |
 | `fc/` | `drone-fc` | Linux (Raspberry Pi 5, or any board with SPI/I2C/GPIO) | Flight code: sensors, stabilization, motors, failsafes |
 
