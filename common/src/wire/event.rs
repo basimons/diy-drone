@@ -22,7 +22,7 @@ code!(
     /// Why a failsafe took over (drone-design.md §4).
     pub FailsafeCause: u8 {
         LinkLoss = 1,
-        ClientFrozen = 2, // the client's Sticks stopped changing
+        ClientFrozen = 2, // the link is alive but the client stopped updating (protocol.md §6 rule 5)
         LowBattery = 3,
         LoopOverrun = 4,
     }

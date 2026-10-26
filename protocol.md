@@ -1,6 +1,6 @@
 # Link Protocol
 
-*2026-10-22. Status: agreed in conversation, ready for planning.*
+*2026-10-22. Status: being implemented; §7 describes the current code.*
 
 ## 1. Intent
 
@@ -59,7 +59,7 @@ Message layouts use the packet diagram style of RFCs, following the [Augmented P
 - A field drawn with `:` edges is **variable length**: it takes the remaining bytes (or the length given by an earlier field).
 - `(cont.)` means the field above continues on the next row.
 - **Byte order: all multi-byte numbers are little-endian** (low byte first). This deliberately differs from the RFC convention of big-endian ("network byte order").
-- `u8/u16/u32` = unsigned integers of 1/2/4 bytes, `i16` = signed 2-byte integer, `f32` = 4-byte IEEE 754 decimal number.
+- `u8/u16/u32` = unsigned integers of 1/2/4 bytes, `i16` = signed 2-byte integer, `f32` = 4-byte IEEE 754 floating-point number.
 
 ### 4.1 Packet
 
@@ -102,7 +102,7 @@ How packets travel depends on the link:
   - Packet length is known from the delimiter position, so there is no length field.
   - Packets ≤ 254 bytes cost exactly 1 extra byte, plus the delimiter.
 
-**Receive rule:** on a stream, cut at `0x00` and undo COBS. Then, on every link: check length ≤ 255, check CRC, check Flags. Anything that fails is dropped silently (counted for link-quality stats).
+**Receive rule:** on a stream, cut at `0x00` and undo COBS. Then, on every link: check 6 ≤ length ≤ 255, check CRC, check Flags. Anything that fails is dropped silently (counted for link-quality stats).
 
 **Example size:** a Sticks message is 6 (packet header and CRC) + 8 (payload) = 14 bytes as a packet, + 2 (COBS + delimiter) = **16 bytes** as a frame on a byte stream.
 
@@ -124,7 +124,7 @@ Direction: C→D = client (laptop) to drone, D→C = drone to client. The diagra
 
 ### 5.0 Requests and answers
 
-- A **request** is any C→D message except Sticks, Hello and Ping: commands, LinkTest, SetSettings, GetSettings, Subscribe, RequestOnce, ListLogs, ReadLog.
+- A **request** is any C→D message except Sticks, Hello, Ping and LinkTestData: commands, LinkTest, SetSettings, GetSettings, Subscribe, RequestOnce, ListLogs, ReadLog.
 - Every request payload **starts with a Request ID (u16)**, the client picks it by counting up its requests (wrapping 65535 → 0; every value is valid). It tells the drone "this is the same request as before" and lets the client match answers to requests. It is separate from the packet Sequence.
 - Every request gets **exactly one answer**: its data message (LinkTestResult, Settings, StreamData, LogList, LogChunk, which echo the Request ID), or a Reply. Errors (unknown stream/group/log ID, bad rate, refused) are always a Reply.
 - **Resending:** if no answer arrives within a timeout, the client resends the request with the **same Request ID** (and a new Sequence). The drone remembers the last 16 Request IDs it handled; a repeat is answered again without executing twice.
@@ -191,7 +191,7 @@ where:
 
 where:
 
-- **Timestamp (TS):** 4 bytes, u32. Sender's session clock (§5.1, "Session clock") in µs when the Ping was sent.
+- **Timestamp (TS):** 4 bytes, u32. Sender's session clock (see "Session clock" below) in µs when the Ping was sent.
 
 **Pong** (`0x04`, the answer to a Ping):
 
@@ -229,7 +229,7 @@ So both clocks start at almost the same moment and the offset between them is ro
 
 Rules:
 
-- **Until a handshake succeeds, everything except Hello and Ping is ignored.**
+- **Until a handshake succeeds, each side ignores everything except Hello, HelloReply, Ping and Pong.** A Ping before the handshake only measures the round trip; its times use no session clock yet.
 - **Hello and HelloReply carry Sequence 0.** On a valid Hello the drone resets both counters; its HelloReply is its message 0.
 - **Hello and HelloReply never change**, not even in a new protocol version: their layout, Result codes and the meaning of each option bit stay as they are, so a client and drone of different versions can always tell each other so. Option bits the receiver doesn't know are kept, so the drone can answer "option not supported".
 - **A new Hello restarts the session at the protocol layer only:** sequence counters, subscriptions (back to the default set) and the remembered Request IDs. It does **not** touch the internal state (sticks, armed state, settings). Sticks stop arriving while the client reconnects; that gap is handled by the normal link-loss logic like any other silence.
@@ -263,10 +263,9 @@ where:
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|           Request ID          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                       Filler (variable)                       :
+|           Request ID          |       Filler (variable)       :
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+                               +
 :                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
@@ -307,7 +306,7 @@ where:
 - **Bytes Received (BR):** 4 bytes, u32. Bytes of those messages on the link, counted the same way as Bytes Sent.
 - **Elapsed (El):** 4 bytes, u32. Drone's time in µs from the first to the last LinkTestData sent or received.
 
-The client puts these next to its own counts to get bytes per second and the loss rate for the tested direction. Sticks keep flowing during a test (client sends test or not), so the drone's link-loss logic is unaffected.
+The client puts these next to its own counts to get bytes per second and the loss rate for the tested direction. Sticks keep flowing during a test, whichever side sends the test data, so the drone's link-loss logic is unaffected.
 
 ### 5.2 Control
 
@@ -409,7 +408,7 @@ where:
 | 12 | unknown log |
 | 13 | offset past the end |
 
-`drone-common` adds a reason together with the first request that uses it.
+Reasons 8–13 belong to requests that `drone-common` doesn't implement yet; it adds a reason together with the first request that uses it.
 
 What a Reply may say depends on the request:
 
@@ -435,12 +434,11 @@ Arm is only accepted while the transmitter's arm switch is on (drone-design.md, 
 
 Rules:
 
-- Status unknown type (2) only answers a Type the drone doesn't know, always with Reason 0. A known Type is never answered with it.
-- Status malformed (3) answers a request that didn't decode (e.g. wrong length), always with Reason 0. A malformed message that isn't a request (e.g. Sticks) gets no Reply.
+- Status unknown type (2) only answers a Type the drone doesn't know. A known Type is never answered with it.
+- Status malformed (3) answers a request that didn't decode (e.g. wrong length). A malformed message that isn't a request (e.g. Sticks) gets no Reply.
 - For unknown type and malformed, the Request ID is the first 2 bytes of the payload. A payload shorter than that can't be answered and gets no Reply.
-- A Reason the request may not use (e.g. Flip refused with 5 throttle not low) is invalid.
-- Any other combination is invalid: OK to a request whose success is a data message, OK or busy with a Reason, refused without one, refused for a request that is never refused, an Answers Type that is not a request (e.g. Sticks).
-- A Status or Reason the receiver doesn't know makes the Reply invalid. Both sides passed Hello with the same protocol version, so they know the same codes (§2).
+- Invalid: a Reason with any Status but refused; refused with Reason 0, with a Reason the request may not use (e.g. Flip refused with 5 throttle not low), or for a request that is never refused; OK to a request whose success is a data message; an Answers Type that is not a request (e.g. Sticks); malformed for a Type that isn't a known request.
+- A Status or Reason the receiver doesn't know makes the Reply invalid (§2).
 
 **Event** (`0x41`, D→C, never an answer, so no Request ID): the drone tells the client something happened.
 
@@ -448,9 +446,9 @@ Rules:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|     Level     |              Code             | Data (var.)   :
+|     Level     |              Code             |               :
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+               +
-:                                                               |
+:                        Data (variable)                        |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
@@ -458,7 +456,7 @@ where:
 
 - **Level (L):** 1 byte. One of: 0 = debug, 1 = info, 2 = warning, 3 = error. Fixed per Code (table below); only a Text event chooses its own.
 - **Code (C):** 2 bytes, u16. What happened, from the table below. 0 = Text.
-- **Data:** the rest of the payload (up to 246 bytes), layout per Code. Most events have none.
+- **Data:** variable length, 0 … 246 bytes, the rest of the payload; layout per Code. Most events have none.
 
 Events (the high byte of the Code groups them):
 
@@ -471,23 +469,47 @@ Events (the high byte of the Code groups them):
 | `0x0202` | Link restored | info | none |
 | `0x0301` | Battery low | warning | Millivolts: u16, whole pack |
 | `0x0302` | Battery critical | error | Millivolts: u16, whole pack |
-| `0x0401` | Failsafe triggered (an automatic safety action took over) | error | Cause: u8 (0 is never used). 1 = link loss, 2 = client frozen (its Sticks stopped changing), 3 = low battery, 4 = loop overrun |
+| `0x0401` | Failsafe triggered (an automatic safety action took over) | error | Cause: u8 (0 is never used). 1 = link loss, 2 = client frozen (the link is alive but the client stopped updating, §6 rule 5), 3 = low battery, 4 = loop overrun |
 | `0x0402` | Loop overrun (the flight loop missed its deadline) | error | Late: u32, µs |
 | `0x0403` | IMU error | error | none |
 
-Battery low / Battery critical:
+**Text** (Code `0x0000`):
 
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|     Level     |              Code             |   Millivolts  :
+|     Level     |              Code             |               :
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+               +
+:                        Text (variable)                        |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-:    (cont.)    |
+```
+
+where:
+
+- **Level (L):** 1 byte, any level.
+- **Code (C):** 2 bytes, u16, 0.
+- **Text:** variable length, 1 … 246 bytes of UTF-8.
+
+**Battery low** (`0x0301`) and **Battery critical** (`0x0302`):
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|     Level     |              Code             |   Millivolts  |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    (cont.)    |
 +-+-+-+-+-+-+-+-+
 ```
 
-Failsafe triggered:
+where:
+
+- **Level (L):** 1 byte. Warning for Battery low, error for Battery critical.
+- **Code (C):** 2 bytes, u16. `0x0301` or `0x0302`.
+- **Millivolts:** 2 bytes, u16. Voltage of the whole pack.
+
+**Failsafe triggered** (`0x0401`):
 
 ```
  0               1               2               3
@@ -497,23 +519,35 @@ Failsafe triggered:
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-Loop overrun:
+where:
+
+- **Level (L):** 1 byte, error.
+- **Code (C):** 2 bytes, u16, `0x0401`.
+- **Cause:** 1 byte. One of: 1 = link loss, 2 = client frozen, 3 = low battery, 4 = loop overrun. 0 is never used.
+
+**Loop overrun** (`0x0402`):
 
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|     Level     |              Code             |      Late     :
+|     Level     |              Code             |      Late     |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-:                    (cont.)                    |
+|                    (cont.)                    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
+
+where:
+
+- **Level (L):** 1 byte, error.
+- **Code (C):** 2 bytes, u16, `0x0402`.
+- **Late:** 4 bytes, u32, in µs. How late the loop run finished.
 
 Rules:
 
 - A known Code with a different Level, or with Data that doesn't match its layout, makes the Event invalid.
-- A Text event with no text is invalid.
-- A Code, Level or Cause the receiver doesn't know makes the Event invalid; both sides know the same codes (§2). New events are added to this table and to `drone-common` together, in a new protocol version.
+- A Text event whose text is empty or not valid UTF-8 is invalid.
+- A Code, Level or Cause the receiver doesn't know makes the Event invalid (§2). New events are added to this table and to `drone-common` together, in a new protocol version.
 
 ### 5.5 Settings
 
@@ -524,10 +558,9 @@ A **Setting Group** (used inside SetSettings and Settings):
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|    Group ID   |     Length    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                       Values (variable)                       :
+|    Group ID   |     Length    |       Values (variable)       :
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+                               +
 :                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
@@ -536,17 +569,16 @@ where:
 
 - **Group ID (GID):** 1 byte, u8. 0 is never used.
 - **Length (Len):** 1 byte. Number of bytes in Values; Len == size(Values). Lets the receiver reject malformed messages cleanly.
-- **Values:** Len bytes, layout per group. Decimal values are f32.
+- **Values:** Len bytes, layout per group. Fractional values are f32.
 
 **SetSettings** (`0x50`, C→D):
 
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|           Request ID          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                 Setting Group list (variable)                 :
+|           Request ID          | Setting Group list (variable) :
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+                               +
 :                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
@@ -563,10 +595,9 @@ where:
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|           Request ID          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                    Group ID list (variable)                   :
+|           Request ID          |    Group ID list (variable)   :
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+                               +
 :                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
@@ -581,10 +612,9 @@ where:
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|           Request ID          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                 Setting Group list (variable)                 :
+|           Request ID          | Setting Group list (variable) :
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+                               +
 :                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
@@ -644,11 +674,10 @@ Answered with one StreamData carrying this Request ID (or a Reply on error).
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|           Request ID          |   Stream ID   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        Data (variable)                        :
-:                                                               |
+|           Request ID          |   Stream ID   |               :
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+               +
+:                        Data (variable)                        |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
@@ -716,10 +745,9 @@ where:
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|           Request ID          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                   Log Entry list (variable)                   :
+|           Request ID          |   Log Entry list (variable)   :
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+                               +
 :                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
@@ -772,10 +800,9 @@ where:
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |           Request ID          |     Log ID    |     Offset    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                    (cont.)                    |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        Data (variable)                        :
-:                                                               |
+|                    (cont.)                    |               :
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+               +
+:                        Data (variable)                        |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
@@ -790,7 +817,7 @@ Rules:
 
 - **Log IDs are 1 byte**, so the drone lists at most 255 logs (the newest ones; 0 is never used). Older logs stay on the SD card and can be fetched over WiFi as files.
 - The client asks by **position**, so a lost chunk is just asked for again; the drone keeps no download state.
-- An offset at/after the end returns a LogChunk with no Data.
+- An Offset exactly at the end returns a LogChunk with no Data (the end of the log); an Offset past the end is refused with Reason 13.
 - What goes into a log and its file format: out of scope here.
 
 ## 6. Behaviour rules the protocol relies on
@@ -809,7 +836,7 @@ Two shared crates, both `no_std` (no operating system or heap needed) so the fli
 
 ```
 common/src/
-  domain.rs    internal state: Sticks, ArmState, LinkHealth, settings values
+  domain.rs    internal state: Sticks, ArmState, RcChannels (raw CRSF channel values); later LinkHealth, settings values
   wire/        our protocol
     crc16.rs      (private)
     cobs.rs       (private)
@@ -823,10 +850,10 @@ common/src/
                   Text with EventText, a string that needs no heap
     payload.rs    (private) Wire: how each field reads and writes itself; Code: enums stored as numbers
     macros/       (private) code!, wire_struct!, messages!, events!: turn those lists into types
-  crsf.rs      CRC-8, CRSF frame parsing, CRSF channels → Sticks
+  crsf.rs      CRC-8 and CRSF constants; later frame parsing, CRSF channels → Sticks
 ```
 
-- The **internal state** types the adapters produce (sticks, pending command, settings changes, link health). They are protocol-neutral: CRSF units (172–1811) only exist inside `crsf.rs`, which converts them.
+- The **internal state** types the adapters produce (sticks, pending command, settings changes, link health). They are protocol-neutral: CRSF units (172–1811) only exist in `RcChannels` and `crsf.rs`.
 - A Rust type for every message in §5 with encode/decode. Messages are shaped like the wire; where a message *is* a domain concept (Sticks), there is one type: it is defined with the messages and `domain` re-exports it.
 - Three layers, each with its own type, so the compiler keeps them apart:
   - `Message::encode(sequence, buf) -> Packet` and `Message::decode(&Packet) -> Result<Message, MessageError>`.
@@ -834,7 +861,7 @@ common/src/
   - `stream::encode(&Packet, buf)` and `StreamDecoder::next_packet(&mut chunk)` add and remove COBS on byte streams.
   - CRC-16 and COBS themselves are private. The sequence counter belongs to the caller.
   - `PacketError` (damaged or not for us) is dropped silently; `MessageError` (intact but invalid) can be answered, and the caller still holds the packet to do so.
-- Settings group and stream layouts; reason and event codes.
+- Settings group and stream layouts (once those messages exist); Reason and event codes.
 - Tests: round-trip every message; corrupted/truncated packets are rejected; COBS edge cases (zeros, 254-byte runs, max size); streams split at every chunk size.
 
 **`drone-link`: behaviour both sides need.** Depends on `drone-common`, never the other way around (Rust forbids circular dependencies between crates, so the boundary enforces itself). Created when its first piece is needed.
