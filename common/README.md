@@ -20,87 +20,153 @@ Message  ⇄  Packet  ⇄  frame (byte streams only)
   `0x00` bytes are replaced by signposts, and one `0x00` ends the frame, so the receiver knows where each packet
   ends (protocol.md §4.2).
 
+Below, a client and a drone talk over a byte stream: anything with `Read + Write`, such as the serial port to the
+radio module or a TCP stream. Each message and event is a plain struct, and the types decide what can be said, so
+there are no status bytes or reason numbers to get wrong. Over UDP one datagram is one packet: skip
+`StreamDecoder` and `stream::encode`, read with `Packet::parse(&datagram)` and send `packet.as_bytes()`.
+
+### Both sides: sending
+
 ```rust
-use drone_common::wire::message::{Message, Ping};
-use drone_common::wire::packet::{MAX_PACKET_LEN, Packet};
+use drone_common::wire::message::Message;
+use drone_common::wire::packet::MAX_PACKET_LEN;
+use drone_common::wire::stream::{self, MAX_FRAME_LEN};
+use std::io::Write;
+
+pub const PROTOCOL_VERSION: u8 = 1;
+
+/// Sends one message as a frame. Every message sent counts up the sequence number (protocol.md §4.1).
+pub fn send(link: &mut impl Write, sequence: &mut u16, message: Message) -> std::io::Result<()> {
+    let mut packet = [0u8; MAX_PACKET_LEN];
+    let mut frame = [0u8; MAX_FRAME_LEN];
+    link.write_all(stream::encode(&message.encode(*sequence, &mut packet), &mut frame))?;
+    *sequence = sequence.wrapping_add(1);
+    return Ok(());
+}
+```
+
+### Client
+
+Opens a session, asks for a flip, then handles whatever comes back.
+
+```rust
+use drone_common::wire::event::Event;
+use drone_common::wire::message::{Answer, Flip, Hello, HelloResult, Message, Options, RequestId};
 use drone_common::wire::reply::Reply;
-use drone_common::wire::stream::{self, MAX_FRAME_LEN, StreamDecoder};
+use drone_common::wire::stream::StreamDecoder;
+use std::error::Error;
+use std::io::{Read, Write};
 
-// Illustrative: `socket`, `port`, `handle`, … are yours. Both error types implement `core::error::Error`,
-// so `?` works with e.g. anyhow.
-let ping = Message::Ping(Ping { timestamp: 1234 });
-let mut buf = [0u8; MAX_PACKET_LEN];
+fn client(link: &mut (impl Read + Write)) -> Result<(), Box<dyn Error>> {
+    let mut sequence = 0; // Hello is message 0 of a session
+    let hello = Hello {
+        protocol_version: PROTOCOL_VERSION,
+        options: Options::default(),
+    };
+    send(link, &mut sequence, Message::Hello(hello))?;
 
-// UDP
-// Hello and HelloReply are message 0 of a session: encode them with sequence 0.
-socket.send(ping.encode(sequence, &mut buf).as_bytes())?;
-let packet = Packet::parse(&datagram)?;            // PacketError: damaged, drop and count it
-let received = Message::decode(&packet)?;          // MessageError: intact but invalid, can be answered
+    // Requests count up their own Request ID; a resend after a timeout keeps it (protocol.md §5.0).
+    // A real client sends this after the HelloReply, with Sticks going out at 50 Hz all the time (§5.2).
+    let flip = Flip {
+        request_id: RequestId(1),
+        direction: 0xC000, // to the left
+        duration_ms: 300,
+    };
+    send(link, &mut sequence, Message::Flip(flip))?;
 
-// Byte stream (serial, radio): reads arrive in chunks of any size
-let mut frame = [0u8; MAX_FRAME_LEN];
-port.write_all(stream::encode(&ping.encode(sequence, &mut buf), &mut frame))?;
-
-let mut decoder = StreamDecoder::new();
-let mut chunk = &read_buf[..n];
-while let Some(result) = decoder.next_packet(&mut chunk) {
-    let Ok(packet) = result else { continue };     // count the PacketError
-    match Message::decode(&packet) {
-        Ok(message) => handle(packet.sequence(), message),
-        Err(error) => reject(error, Reply::to_invalid(&packet)), // "malformed" / "unknown type", or None
+    let mut decoder = StreamDecoder::new();
+    let mut read_buf = [0u8; 512];
+    loop {
+        let n = link.read(&mut read_buf)?;
+        let mut chunk = &read_buf[..n];
+        while let Some(packet) = decoder.next_packet(&mut chunk) {
+            let Ok(packet) = packet else { continue }; // damaged on the way: drop it, count it as lost
+            match Message::decode(&packet) {
+                Ok(Message::HelloReply(reply)) => match reply.result {
+                    HelloResult::Ok => println!("connected"),
+                    refused => return Err(format!("drone refused the session: {refused:?}").into()),
+                },
+                Ok(Message::Reply(Reply { request_id, answer: Answer::Flip(outcome) })) => {
+                    println!("flip {request_id:?}: {outcome:?}") // e.g. "flip RequestId(1): Refused(NotArmed)"
+                }
+                Ok(Message::Event(Event::Text(text))) => println!("{:?}: {}", text.level, text.text),
+                Ok(Message::Event(event)) => println!("{:?}: {event:?}", event.level()),
+                Ok(other) => println!("ignored {other:?}"),
+                Err(error) => println!("dropped an invalid message: {error}"), // only the drone answers these
+            }
+        }
     }
 }
 ```
 
-## Messages, by example
+### Drone
 
-One request from start to finish, plus some events. Each message and event is a plain struct; the types decide what
-can be said, so there are no status bytes or reason numbers to get wrong.
+Answers every request: with its outcome, or with "malformed" / "unknown type" when it doesn't decode. Deciding
+*whether* to arm or flip is the flight code's job; the types only let it answer with reasons that request may have.
+Not shown: remembering the last 16 Request IDs, so a resent request is answered again without being executed twice
+(protocol.md §5.0).
 
 ```rust
-use drone_common::wire::event::{BatteryLow, Event, EventLevel, EventText, Text};
-use drone_common::wire::message::{Answer, Flip, FlipRefusal, Message, RequestId};
+use drone_common::wire::message::{ArmRefusal, HelloReply, HelloResult, Message, Options};
 use drone_common::wire::reply::{Outcome, Reply};
+use drone_common::wire::stream::StreamDecoder;
+use std::error::Error;
+use std::io::{Read, Write};
 
-// Client: ask for a flip. Every request starts with a Request ID; a resend keeps the same ID.
-let flip = Flip {
-    request_id: RequestId(7),
-    direction: 0xC000, // to the left
-    duration_ms: 300,
-};
-let received = Message::Flip(flip);
-
-// Drone: decide, then answer. `Reply::to` copies the Request ID and type from the request, and a Flip only
-// accepts a `FlipRefusal`: `Outcome::Refused(ArmRefusal::BatteryLow)` doesn't compile.
-let reply = match received {
-    Message::Flip(flip) => Reply::to(&flip, Outcome::Refused(FlipRefusal::TooLow)),
-    Message::Arm(arm) => Reply::to(&arm, Outcome::Ok),
-    // Disarm is never refused: `Outcome::Refused` can't be built for it, `Outcome::Busy` can.
-    Message::Disarm(disarm) => Reply::to(&disarm, Outcome::Busy),
-    _ => return,
-};
-
-// Drone: report on its own. Each event type has a fixed code and level; Text can have any level.
-let battery = Event::BatteryLow(BatteryLow { millivolts: 14_000 });
-let text = EventText::format(format_args!("cell {} at {:.1} V", 3, 3.35)).unwrap(); // None if empty or > 246 bytes
-let note = Event::Text(Text { level: EventLevel::Info, text });
-
-// Client: handle what comes back.
-for message in [Message::Reply(reply), Message::Event(battery), Message::Event(note)] {
-    match message {
-        Message::Reply(Reply { request_id, answer: Answer::Flip(Outcome::Ok) }) => println!("{request_id:?}: flipping"),
-        Message::Reply(Reply { request_id, answer: Answer::Flip(outcome) }) => {
-            println!("{request_id:?}: no flip, {outcome:?}") // RequestId(7): no flip, Refused(TooLow)
+/// `flight` is your flight code: it takes the sticks and decides each request, returning its Outcome.
+fn drone(link: &mut (impl Read + Write), flight: &mut Flight) -> Result<(), Box<dyn Error>> {
+    let mut sequence = 0;
+    let mut decoder = StreamDecoder::new();
+    let mut read_buf = [0u8; 512];
+    loop {
+        let n = link.read(&mut read_buf)?;
+        let mut chunk = &read_buf[..n];
+        while let Some(packet) = decoder.next_packet(&mut chunk) {
+            let Ok(packet) = packet else { continue }; // damaged on the way: drop it, count it as lost
+            let answer = match Message::decode(&packet) {
+                Ok(Message::Hello(hello)) => {
+                    sequence = 0; // a Hello starts a new session; the HelloReply is its message 0
+                    let result = if hello.protocol_version != PROTOCOL_VERSION {
+                        HelloResult::VersionMismatch
+                    } else if hello.options != Options::default() {
+                        HelloResult::OptionNotSupported // e.g. authentication, not built yet
+                    } else {
+                        HelloResult::Ok
+                    };
+                    Some(Message::HelloReply(HelloReply {
+                        protocol_version: PROTOCOL_VERSION,
+                        result,
+                        options: Options::default(),
+                    }))
+                }
+                Ok(Message::Sticks(sticks)) => {
+                    flight.set_sticks(sticks);
+                    None // Sticks are never answered
+                }
+                Ok(Message::Arm(arm)) => {
+                    let outcome = if flight.arm_switch_on() {
+                        flight.arm()
+                    } else {
+                        Outcome::Refused(ArmRefusal::ArmSwitchOff) // the transmitter has the last word
+                    };
+                    Some(Message::Reply(Reply::to(&arm, outcome)))
+                }
+                Ok(Message::Flip(flip)) => Some(Message::Reply(Reply::to(&flip, flight.flip(&flip)))),
+                Ok(other) => {
+                    println!("not handled yet: {other:?}");
+                    None
+                }
+                Err(_) => Reply::to_invalid(&packet).map(Message::Reply), // "malformed" / "unknown type"
+            };
+            if let Some(answer) = answer {
+                send(link, &mut sequence, answer)?;
+            }
         }
-        Message::Event(Event::Text(Text { level, text })) => println!("{level:?}: {text}"), // Info: cell 3 at 3.4 V
-        Message::Event(event) => println!("{:?}: {event:?}", event.level()), // Warning: BatteryLow(BatteryLow { millivolts: 14000 })
-        _ => {}
+        // The drone also reports on its own, e.g. when the battery runs low:
+        // send(link, &mut sequence, Message::Event(Event::BatteryLow(BatteryLow { millivolts })))?;
     }
 }
 ```
-
-A packet that doesn't decode is answered with `Reply::to_invalid(&packet)`: "malformed" for a request, "unknown type"
-for a type this build doesn't know (protocol.md §5.4).
 
 ## Modules
 
