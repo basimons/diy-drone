@@ -124,3 +124,19 @@ wire_enum!(
         LinkQuality = 7,
     }
 );
+
+/// Why a Reply has its Status, e.g. "battery low". The list is still to be decided (protocol.md §9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReasonCode(pub u16);
+
+impl ReasonCode {
+    pub const NONE: Self = Self(0);
+}
+
+/// What an Event is about, machine-readable. The list is still to be decided (protocol.md §9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventCode(pub u16);
+
+impl EventCode {
+    pub const NONE: Self = Self(0);
+}

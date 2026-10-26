@@ -2,7 +2,8 @@
 #![allow(dead_code)] // each test file uses a different subset
 
 use drone_common::wire::message::Message;
-use drone_common::wire::packet::{MAX_PACKET_LEN, PacketError};
+use drone_common::wire::message::MessageError;
+use drone_common::wire::packet::{MAX_PACKET_LEN, Packet, PacketError};
 use drone_common::wire::stream::{self, MAX_FRAME_LEN, StreamDecoder};
 
 /// CRC-16/CCITT-FALSE, written out bit by bit.
@@ -91,4 +92,32 @@ pub fn read_all(bytes: &[u8]) -> Vec<Result<(u16, Message), PacketError>> {
         results.push(packet.map(|p| return (p.sequence(), Message::decode(&p).expect("valid message"))));
     }
     return results;
+}
+
+/// Decodes a hand-built packet with sequence 0.
+pub fn decode_payload(message_type: u8, payload: &[u8]) -> Result<Message, MessageError> {
+    let bytes = packet(0, message_type, 0, payload);
+    return Message::decode(&Packet::parse(&bytes).unwrap());
+}
+
+/// Encodes `message` with sequence 42, checks it against a hand-built packet, and checks it decodes back.
+pub fn check_round_trip(message: Message, message_type: u8, payload: &[u8]) {
+    let encoded = encode_packet(&message, 42);
+    assert_eq!(encoded, packet(0, message_type, 42, payload), "{message:?}");
+    assert_eq!(decode_payload(message_type, payload), Ok(message));
+}
+
+/// Every payload length other than `length` is `WrongLength`.
+pub fn check_only_length(message_type: u8, length: usize, fill: u8) {
+    for wrong in [0, length.saturating_sub(1), length + 1, 249] {
+        if wrong == length {
+            continue;
+        }
+        let decoded = decode_payload(message_type, &vec![fill; wrong]);
+        assert_eq!(
+            decoded,
+            Err(MessageError::WrongLength),
+            "type {message_type:#04x} with {wrong} bytes"
+        );
+    }
 }
