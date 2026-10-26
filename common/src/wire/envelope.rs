@@ -43,14 +43,12 @@ impl Envelope {
 
     /// `payload` must be at most `MAX_PAYLOAD_LEN` bytes.
     fn from_parts(message_type: MessageType, sequence: u16, payload: &[u8]) -> Self {
-        let mut envelope = Self {
+        return Self {
             message_type,
             sequence,
-            payload: [0; MAX_PAYLOAD_LEN],
+            payload: core::array::from_fn(|i| return payload.get(i).copied().unwrap_or(0)),
             payload_len: payload.len() as u8,
         };
-        envelope.payload[..payload.len()].copy_from_slice(payload);
-        return envelope;
     }
 
     pub fn message_type(&self) -> MessageType {
