@@ -1,57 +1,57 @@
 //! One-byte codes from protocol.md §5.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct UnknownCode(pub u8);
+pub struct UnknownCode<T = u8>(pub T);
 
-/// Defines a one-byte code enum with conversions to and from `u8`.
-/// Plain: `TryFrom<u8>` rejects unknown bytes with `UnknownCode`.
-/// `with Unknown`: adds an `Unknown(byte)` variant and an infallible `From<u8>`, for codes the drone must still
-/// see to answer them.
+/// Defines a code enum stored as `$repr` (`u8` or `u16`), with conversions to and from it.
+/// Plain: `TryFrom<$repr>` rejects unknown values with `UnknownCode`.
+/// `with Unknown`: adds an `Unknown(value)` variant and an infallible `From<$repr>`, for codes the drone must
+/// still see to answer them.
 macro_rules! wire_enum {
-    (@decode $name:ident { $($variant:ident = $value:literal,)* }) => {
-        impl TryFrom<u8> for $name {
-            type Error = UnknownCode;
+    (@decode $name:ident: $repr:ident { $($variant:ident = $value:literal,)* }) => {
+        impl TryFrom<$repr> for $name {
+            type Error = UnknownCode<$repr>;
 
-            fn try_from(byte: u8) -> Result<Self, UnknownCode> {
-                return match byte {
+            fn try_from(value: $repr) -> Result<Self, UnknownCode<$repr>> {
+                return match value {
                     $($value => Ok(Self::$variant),)*
-                    _ => Err(UnknownCode(byte)),
+                    _ => Err(UnknownCode(value)),
                 };
             }
         }
     };
-    (@decode $name:ident $unknown:ident { $($variant:ident = $value:literal,)* }) => {
-        impl From<u8> for $name {
-            fn from(byte: u8) -> Self {
-                return match byte {
+    (@decode $name:ident: $repr:ident $unknown:ident { $($variant:ident = $value:literal,)* }) => {
+        impl From<$repr> for $name {
+            fn from(value: $repr) -> Self {
+                return match value {
                     $($value => Self::$variant,)*
                     other => Self::$unknown(other),
                 };
             }
         }
     };
-    ($(#[$meta:meta])* $name:ident $(with $unknown:ident)? { $($variant:ident = $value:literal,)* }) => {
+    ($(#[$meta:meta])* $name:ident: $repr:ident $(with $unknown:ident)? { $($variant:ident = $value:literal,)* }) => {
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum $name {
             $($variant,)*
-            $($unknown(u8),)? // only produced by decoding, never holds a known code
+            $($unknown($repr),)? // only produced by decoding, never holds a known code
         }
 
-        impl From<$name> for u8 {
-            fn from(code: $name) -> u8 {
+        impl From<$name> for $repr {
+            fn from(code: $name) -> $repr {
                 return match code {
                     $($name::$variant => $value,)*
-                    $($name::$unknown(byte) => byte,)?
+                    $($name::$unknown(value) => value,)?
                 };
             }
         }
 
-        wire_enum!(@decode $name $($unknown)? { $($variant = $value,)* });
+        wire_enum!(@decode $name: $repr $($unknown)? { $($variant = $value,)* });
     };
 }
 
-wire_enum!(MessageType with Unknown {
+wire_enum!(MessageType: u8 with Unknown {
     Hello = 0x01,
     HelloReply = 0x02,
     Ping = 0x03,
@@ -83,20 +83,20 @@ wire_enum!(MessageType with Unknown {
     LogChunk = 0x73,
 });
 
-wire_enum!(HelloResult {
+wire_enum!(HelloResult: u8 {
     Ok = 0,
     VersionMismatch = 1,
     OptionNotSupported = 2,
 });
 
-wire_enum!(LinkTestDirection {
+wire_enum!(LinkTestDirection: u8 {
     DroneSends = 0,
     ClientSends = 1,
 });
 
 wire_enum!(
     /// Status of a Reply.
-    Status {
+    Status: u8 {
         Ok = 0,
         Refused = 1,
         UnknownType = 2,
@@ -106,7 +106,7 @@ wire_enum!(
     }
 );
 
-wire_enum!(EventLevel {
+wire_enum!(EventLevel: u8 {
     Debug = 0,
     Info = 1,
     Warning = 2,
@@ -115,7 +115,7 @@ wire_enum!(EventLevel {
 
 wire_enum!(
     /// Units per stream are in protocol.md §5.6.
-    StreamId with Unknown {
+    StreamId: u8 with Unknown {
         Status = 1,
         Battery = 2,
         Attitude = 3,
@@ -126,21 +126,42 @@ wire_enum!(
     }
 );
 
-/// Why a Reply has its Status, e.g. "battery low". The list is still to be decided (protocol.md §9).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ReasonCode(pub u16);
+wire_enum!(
+    /// Why a Reply has its Status (protocol.md §5.4). The high byte groups them. On the wire 0 means "no
+    /// reason"; that is `None` in `Reply`, never a code.
+    ReasonCode: u16 {
+        ThrottleNotLow = 0x0101, // Arm: throttle must be at the bottom
+        ImuNotReady = 0x0102,
+        BatteryLow = 0x0103,
+        NotArmed = 0x0201,
+        NotFlying = 0x0202,
+        TooLow = 0x0203, // e.g. Flip close to the ground
+        NotAllowedInSteadyState = 0x0204,
+        NoGps = 0x0301, // GoHome
+        UnknownStream = 0x0401,
+        RateNotPossible = 0x0402,
+        UnknownSettingsGroup = 0x0403,
+        ValueOutOfRange = 0x0404,
+        UnknownLog = 0x0405,
+        OffsetPastEnd = 0x0406, // ReadLog beyond the end of the log
+    }
+);
 
-impl ReasonCode {
-    pub const NONE: Self = Self(0);
-}
-
-/// What an Event is about, machine-readable. The list is still to be decided (protocol.md §9).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct EventCode(pub u16);
-
-impl EventCode {
-    pub const NONE: Self = Self(0);
-}
+wire_enum!(
+    /// What an Event is about (protocol.md §5.4). The high byte groups them. On the wire 0 means "no code";
+    /// that is `None` in `Event`, never a code.
+    EventCode: u16 {
+        Armed = 0x0101,
+        Disarmed = 0x0102,
+        LinkLost = 0x0201,
+        LinkRestored = 0x0202,
+        BatteryLow = 0x0301,
+        BatteryCritical = 0x0302,
+        FailsafeTriggered = 0x0401, // an automatic safety action took over
+        LoopOverrun = 0x0402,       // the flight loop missed its deadline
+        ImuError = 0x0403,
+    }
+);
 
 /// A type byte that is not a known message type. Can't hold a known byte, unlike `MessageType::Unknown`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -390,7 +390,26 @@ where:
 - **Request ID (RID):** 2 bytes, u16. The request this answers.
 - **Answers Type (AT):** 1 byte. The Type of that request.
 - **Status (St):** 1 byte. One of: 0 = OK, 1 = refused, 2 = unknown type, 3 = malformed, 4 = not supported, 5 = busy.
-- **Reason (Rsn):** 2 bytes, u16. Code whose meaning depends on the request (e.g. "too low", "battery low"). 0 = no reason given. Code list: defined in `drone-common`.
+- **Reason (Rsn):** 2 bytes, u16. Why the Status, from the table below. 0 = no reason given. Any other value not in the table makes the Reply invalid.
+
+Reason codes (the high byte groups them):
+
+| Code | Reason | Typical request |
+|------|--------|-----------------|
+| `0x0101` | Throttle not low | Arm |
+| `0x0102` | IMU (motion sensor) not ready | Arm |
+| `0x0103` | Battery low | Arm, TakeOff |
+| `0x0201` | Not armed | TakeOff, Flip |
+| `0x0202` | Not flying | Land, Flip |
+| `0x0203` | Too low | Flip |
+| `0x0204` | Not allowed in steady state | most requests while in SteadyState |
+| `0x0301` | No GPS | GoHome |
+| `0x0401` | Unknown stream | Subscribe, RequestOnce |
+| `0x0402` | Rate not possible | Subscribe |
+| `0x0403` | Unknown settings group | GetSettings, SetSettings |
+| `0x0404` | Value out of range | SetSettings |
+| `0x0405` | Unknown log | ReadLog |
+| `0x0406` | Offset past the end | ReadLog |
 
 **Event** (`0x41`, D→C, never an answer, so no Request ID):
 
@@ -408,8 +427,24 @@ where:
 where:
 
 - **Level (L):** 1 byte. One of: 0 = debug, 1 = info, 2 = warning, 3 = error.
-- **Code (C):** 2 bytes, u16. Machine-readable event code, defined in `drone-common`. 0 = none.
+- **Code (C):** 2 bytes, u16. Machine-readable event code from the table below. 0 = none. Any other value not in the table makes the Event invalid.
 - **Text:** variable length, UTF-8, the rest of the payload (up to 246 bytes). Where "any string from the drone" goes.
+
+Event codes (the high byte groups them):
+
+| Code | Event |
+|------|-------|
+| `0x0101` | Armed |
+| `0x0102` | Disarmed |
+| `0x0201` | Link lost |
+| `0x0202` | Link restored |
+| `0x0301` | Battery low |
+| `0x0302` | Battery critical |
+| `0x0401` | Failsafe triggered (an automatic safety action took over) |
+| `0x0402` | Loop overrun (the flight loop missed its deadline) |
+| `0x0403` | IMU error |
+
+New codes are added to these tables and to `drone-common` together; both sides must agree, which the protocol version in Hello guarantees.
 
 ### 5.5 Settings
 
@@ -755,5 +790,4 @@ common/src/
 
 - CRSF channel → internal state mapping (which AUX channel is arm, flip, etc.).
 - Exact stream field layouts and settings group layouts beyond what is listed.
-- Reply reason codes and event codes.
 - Command resend timeout and default stream rates.

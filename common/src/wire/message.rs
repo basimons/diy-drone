@@ -90,13 +90,13 @@ pub struct Reply {
     pub request_id: RequestId,
     pub answers: RequestType,
     pub status: Status,
-    pub reason: ReasonCode,
+    pub reason: Option<ReasonCode>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Event {
     pub level: EventLevel,
-    pub code: EventCode,
+    pub code: Option<EventCode>,
     pub text: EventText,
 }
 
@@ -241,11 +241,11 @@ impl Message {
                 w.u16(m.request_id.0);
                 w.u8(u8::from(MessageType::from(m.answers)));
                 w.u8(u8::from(m.status));
-                w.u16(m.reason.0);
+                w.u16(m.reason.map_or(0, u16::from));
             }
             Message::Event(m) => {
                 w.u8(u8::from(m.level));
-                w.u16(m.code.0);
+                w.u16(m.code.map_or(0, u16::from));
                 w.put(m.text.as_str().as_bytes());
             }
         }
@@ -300,11 +300,11 @@ impl Message {
                 request_id: r.request_id()?,
                 answers: RequestType::try_from(MessageType::from(r.u8()?)).map_err(invalid)?,
                 status: Status::try_from(r.u8()?).map_err(invalid)?,
-                reason: ReasonCode(r.u16()?),
+                reason: optional_code(r.u16()?)?,
             }),
             MessageType::Event => Message::Event(Event {
                 level: EventLevel::try_from(r.u8()?).map_err(invalid)?,
-                code: EventCode(r.u16()?),
+                code: optional_code(r.u16()?)?,
                 text: EventText::new(core::str::from_utf8(r.rest()).map_err(invalid)?)
                     .ok_or(MessageError::WrongLength)?,
             }),
@@ -316,6 +316,14 @@ impl Message {
         }
         return Ok(message);
     }
+}
+
+/// A two-byte code where 0 means "none".
+fn optional_code<T: TryFrom<u16>>(value: u16) -> Result<Option<T>, MessageError> {
+    return match value {
+        0 => Ok(None),
+        code => T::try_from(code).map(Some).map_err(invalid),
+    };
 }
 
 fn invalid<E>(_: E) -> MessageError {

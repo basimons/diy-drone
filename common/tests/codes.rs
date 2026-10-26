@@ -21,6 +21,28 @@ where
     }
 }
 
+/// For two-byte codes: both directions for every listed code, every other value rejected, and 0 never used
+/// because it means "none" on the wire.
+fn check_u16<T>(table: &[(T, u16)])
+where
+    T: TryFrom<u16, Error = UnknownCode<u16>> + Into<u16> + Copy + PartialEq + Debug,
+{
+    for &(code, value) in table {
+        assert_eq!(code.into(), value, "{code:?} encodes wrong");
+        assert_eq!(T::try_from(value), Ok(code), "value {value:#06x} decodes wrong");
+    }
+    assert!(table.iter().all(|&(_, value)| return value != 0), "0 means none");
+    for value in 0..=u16::MAX {
+        if !table.iter().any(|&(_, v)| return v == value) {
+            assert_eq!(
+                T::try_from(value),
+                Err(UnknownCode(value)),
+                "{value:#06x} should be unknown"
+            );
+        }
+    }
+}
+
 /// For enums with an `Unknown(byte)` fallback: every other byte decodes to `Unknown` and encodes back unchanged.
 fn check_open<T>(table: &[(T, u8)], unknown: fn(u8) -> T)
 where
@@ -193,4 +215,41 @@ fn unknown_type_never_holds_a_known_byte() {
         RequestType::try_from(MessageType::Unknown(0x10)),
         Err(NotARequest(MessageType::Sticks))
     );
+}
+
+#[test]
+fn reason_codes() {
+    use ReasonCode::*;
+    check_u16(&[
+        (ThrottleNotLow, 0x0101),
+        (ImuNotReady, 0x0102),
+        (BatteryLow, 0x0103),
+        (NotArmed, 0x0201),
+        (NotFlying, 0x0202),
+        (TooLow, 0x0203),
+        (NotAllowedInSteadyState, 0x0204),
+        (NoGps, 0x0301),
+        (UnknownStream, 0x0401),
+        (RateNotPossible, 0x0402),
+        (UnknownSettingsGroup, 0x0403),
+        (ValueOutOfRange, 0x0404),
+        (UnknownLog, 0x0405),
+        (OffsetPastEnd, 0x0406),
+    ]);
+}
+
+#[test]
+fn event_codes() {
+    use EventCode::*;
+    check_u16(&[
+        (Armed, 0x0101),
+        (Disarmed, 0x0102),
+        (LinkLost, 0x0201),
+        (LinkRestored, 0x0202),
+        (BatteryLow, 0x0301),
+        (BatteryCritical, 0x0302),
+        (FailsafeTriggered, 0x0401),
+        (LoopOverrun, 0x0402),
+        (ImuError, 0x0403),
+    ]);
 }
