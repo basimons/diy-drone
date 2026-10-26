@@ -12,7 +12,7 @@ macro_rules! code {
         impl $crate::wire::payload::Code for $name {
             type Repr = $repr;
 
-            fn from_repr(value: $repr) -> Result<Self, $crate::wire::message::MessageError> {
+            fn decode(value: $repr) -> Result<Self, $crate::wire::message::MessageError> {
                 return match value {
                     $($value => Ok(Self::$variant),)*
                     _ => Err($crate::wire::message::MessageError::UnknownCode {
@@ -22,7 +22,7 @@ macro_rules! code {
                 };
             }
 
-            fn repr(self) -> $repr {
+            fn encode(self) -> $repr {
                 return self as $repr;
             }
         }

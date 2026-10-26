@@ -19,18 +19,18 @@ pub trait Wire: Sized {
 pub trait Code: Copy {
     type Repr: Wire + Copy;
 
-    fn from_repr(value: Self::Repr) -> Result<Self, MessageError>;
+    fn decode(value: Self::Repr) -> Result<Self, MessageError>;
 
-    fn repr(self) -> Self::Repr;
+    fn encode(self) -> Self::Repr;
 }
 
 impl<C: Code> Wire for C {
     fn read(r: &mut Reader) -> Result<Self, MessageError> {
-        return C::from_repr(C::Repr::read(r)?);
+        return C::decode(C::Repr::read(r)?);
     }
 
     fn write(&self, w: &mut Writer) {
-        self.repr().write(w);
+        self.encode().write(w);
     }
 }
 
@@ -39,11 +39,11 @@ impl Code for Infallible {
     type Repr = u16;
 
     /// Like the refusal enums: an unknown number is unknown, a known `Reason` is invalid here.
-    fn from_repr(value: u16) -> Result<Self, MessageError> {
-        return Reason::from_repr(value).and(Err(MessageError::InvalidValue));
+    fn decode(value: u16) -> Result<Self, MessageError> {
+        return Reason::decode(value).and(Err(MessageError::InvalidValue));
     }
 
-    fn repr(self) -> u16 {
+    fn encode(self) -> u16 {
         match self {} // no value exists, so there is nothing to `return`
     }
 }

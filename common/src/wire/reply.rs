@@ -51,7 +51,7 @@ impl<R: Code<Repr = u16>> Outcome<R> {
     pub(crate) fn write(self, w: &mut Writer) {
         let (status, reason) = match self {
             Outcome::Ok => (Status::Ok, 0),
-            Outcome::Refused(refusal) => (Status::Refused, refusal.repr()),
+            Outcome::Refused(refusal) => (Status::Refused, refusal.encode()),
             Outcome::NotSupported => (Status::NotSupported, 0),
             Outcome::Busy => (Status::Busy, 0),
             Outcome::NotAllowedNow => (Status::NotAllowedNow, 0),
@@ -63,7 +63,7 @@ impl<R: Code<Repr = u16>> Outcome<R> {
     /// Only a refusal has a Reason, and then never 0.
     pub(crate) fn from_wire(status: Status, reason: u16) -> Result<Self, MessageError> {
         return match (status, reason) {
-            (Status::Refused, 1..) => Ok(Outcome::Refused(R::from_repr(reason)?)),
+            (Status::Refused, 1..) => Ok(Outcome::Refused(R::decode(reason)?)),
             (Status::Ok, 0) => Ok(Outcome::Ok),
             (Status::NotSupported, 0) => Ok(Outcome::NotSupported),
             (Status::Busy, 0) => Ok(Outcome::Busy),

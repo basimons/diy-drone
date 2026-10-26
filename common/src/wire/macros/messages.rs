@@ -45,14 +45,14 @@ macro_rules! messages {
                 impl Code for $refusal {
                     type Repr = u16;
 
-                    fn from_repr(value: u16) -> Result<Self, MessageError> {
-                        return match Reason::from_repr(value)? {
+                    fn decode(value: u16) -> Result<Self, MessageError> {
+                        return match Reason::decode(value)? {
                             $(Reason::$reason => Ok($refusal::$reason),)*
                             _ => Err(MessageError::InvalidValue), // a Reason this request is never refused for
                         };
                     }
 
-                    fn repr(self) -> u16 {
+                    fn encode(self) -> u16 {
                         return self as u16;
                     }
                 }
