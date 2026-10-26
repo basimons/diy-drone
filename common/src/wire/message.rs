@@ -1,14 +1,27 @@
 //! The messages of protocol.md §5, as owned Rust types with encode/decode.
 
 use crate::wire::codes::{HelloResult, MessageType};
-use crate::wire::envelope::{Envelope, MAX_PAYLOAD_LEN};
+use crate::wire::packet::{MAX_PACKET_LEN, MAX_PAYLOAD_LEN, Packet};
 
+/// Why an intact packet is not a valid message. Unlike a `PacketError`, the sender can be told (protocol.md §5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DecodeError {
-    UnknownType(u8), // answered with Reply "unknown type"
-    WrongLength,
-    InvalidValue,
+pub enum MessageError {
+    UnknownType(u8),
+    WrongLength,  // payload length doesn't match the message type
+    InvalidValue, // a field holds a value the protocol doesn't allow
 }
+
+impl core::fmt::Display for MessageError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        return match self {
+            MessageError::UnknownType(byte) => write!(f, "unknown message type {byte:#04x}"),
+            MessageError::WrongLength => f.write_str("payload length doesn't match the message type"),
+            MessageError::InvalidValue => f.write_str("a field holds a value the protocol doesn't allow"),
+        };
+    }
+}
+
+impl core::error::Error for MessageError {}
 
 /// Hello/HelloReply options (protocol.md §5.1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -67,7 +80,7 @@ pub enum Message {
 }
 
 impl Message {
-    pub fn message_type(&self) -> MessageType {
+    fn message_type(&self) -> MessageType {
         return match self {
             Message::Hello(_) => MessageType::Hello,
             Message::HelloReply(_) => MessageType::HelloReply,
@@ -76,8 +89,9 @@ impl Message {
         };
     }
 
-    /// Hello and HelloReply always get Sequence 0 (protocol.md §5.1), whatever `sequence` is.
-    pub fn encode(&self, sequence: u16) -> Envelope {
+    /// Writes the packet into `out`. Hello and HelloReply always get Sequence 0 (protocol.md §5.1), whatever
+    /// `sequence` is.
+    pub fn encode<'a>(&self, sequence: u16, out: &'a mut [u8; MAX_PACKET_LEN]) -> Packet<'a> {
         let mut w = Writer::new();
         match self {
             Message::Hello(m) => {
@@ -97,25 +111,24 @@ impl Message {
             }
         }
         let sequence = if is_handshake(self.message_type()) { 0 } else { sequence };
-        return Envelope::new(self.message_type(), sequence, w.written())
-            .expect("every message fits in an envelope and has a known type");
+        return Packet::write(self.message_type(), sequence, w.written(), out);
     }
 
-    pub fn decode(envelope: &Envelope) -> Result<Self, DecodeError> {
-        if is_handshake(envelope.message_type()) && envelope.sequence() != 0 {
-            return Err(DecodeError::InvalidValue);
+    pub fn decode(packet: &Packet) -> Result<Self, MessageError> {
+        if is_handshake(packet.message_type()) && packet.sequence() != 0 {
+            return Err(MessageError::InvalidValue);
         }
         let mut r = Reader {
-            bytes: envelope.payload(),
+            bytes: packet.payload(),
         };
-        let message = match envelope.message_type() {
+        let message = match packet.message_type() {
             MessageType::Hello => Message::Hello(Hello {
                 protocol_version: r.u8()?,
                 options: Options::from_bits(r.u32()?),
             }),
             MessageType::HelloReply => Message::HelloReply(HelloReply {
                 protocol_version: r.u8()?,
-                result: HelloResult::try_from(r.u8()?).map_err(|_| return DecodeError::InvalidValue)?,
+                result: HelloResult::try_from(r.u8()?).map_err(|_| return MessageError::InvalidValue)?,
                 options: Options::from_bits(r.u32()?),
             }),
             MessageType::Ping => Message::Ping(Ping { timestamp: r.u32()? }),
@@ -125,10 +138,10 @@ impl Message {
                 send_time: r.u32()?,
             }),
             // Types without a Rust message yet are treated as unknown until they are added.
-            other => return Err(DecodeError::UnknownType(u8::from(other))),
+            other => return Err(MessageError::UnknownType(u8::from(other))),
         };
         if !r.bytes.is_empty() {
-            return Err(DecodeError::WrongLength);
+            return Err(MessageError::WrongLength);
         }
         return Ok(message);
     }
@@ -144,17 +157,17 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
-        let (head, rest) = self.bytes.split_first_chunk::<N>().ok_or(DecodeError::WrongLength)?;
+    fn take<const N: usize>(&mut self) -> Result<[u8; N], MessageError> {
+        let (head, rest) = self.bytes.split_first_chunk::<N>().ok_or(MessageError::WrongLength)?;
         self.bytes = rest;
         return Ok(*head);
     }
 
-    fn u8(&mut self) -> Result<u8, DecodeError> {
+    fn u8(&mut self) -> Result<u8, MessageError> {
         return Ok(self.take::<1>()?[0]);
     }
 
-    fn u32(&mut self) -> Result<u32, DecodeError> {
+    fn u32(&mut self) -> Result<u32, MessageError> {
         return Ok(u32::from_le_bytes(self.take()?));
     }
 }

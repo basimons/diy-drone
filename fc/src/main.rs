@@ -1,7 +1,6 @@
 use drone_common::domain::{ArmState, RcChannels};
 
 fn main() -> anyhow::Result<()> {
-    println!("drone-fc says: {}", drone_common::hello());
     println!("boot state: {:?}", ArmState::default());
     println!("channels: {:?}", RcChannels::default());
 

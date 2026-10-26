@@ -61,9 +61,9 @@ Message layouts use the packet diagram style of RFCs, following the [Augmented P
 - **Byte order: all multi-byte numbers are little-endian** (low byte first). This deliberately differs from the RFC convention of big-endian ("network byte order").
 - `u8/u16/u32` = unsigned integers of 1/2/4 bytes, `i16` = signed 2-byte integer, `f32` = 4-byte IEEE 754 decimal number.
 
-### 4.1 Envelope
+### 4.1 Packet
 
-Every message, before COBS encoding:
+Every message travels as one packet (on byte streams it is then COBS-framed, §4.2):
 
 ```
  0               1               2               3
@@ -83,26 +83,28 @@ Every message, before COBS encoding:
 
 where:
 
-- **Flags (F):** 1 byte. Bit 0 = "auth tag present". Bits 1–7 reserved. For now F == 0; until authentication exists, a receiver drops any frame with F != 0.
+- **Flags (F):** 1 byte. Bit 0 = "auth tag present". Bits 1–7 reserved. For now F == 0; until authentication exists, a receiver drops any packet with F != 0.
 - **Type (T):** 1 byte. Message type, see §5. 256 values; if more are ever needed, that is a new protocol version.
 - **Sequence (Seq):** 2 bytes, u16. Counter per direction, +1 for every message sent (resends too), wraps 65535 → 0. Detects lost messages (gaps), a frozen sender (counter stops), stale messages (over WiFi: older than the newest seen → dropped), and later replay. It is **not** used to re-sort messages and **not** used to match replies (that is the Request ID, §5.0).
 - **Payload:** variable length, layout depends on T (§5). Requests and their answers start their payload with a Request ID (§5.0); other messages (Sticks, Hello, Ping, Event, …) don't have one.
 - **Auth Tag:** present only when F bit 0 is set. Length and algorithm defined by a future protocol version. Absent for now.
 - **CRC-16 (CRC):** 2 bytes. Over every byte before it (Flags through Auth Tag). Variant CRC-16/CCITT-FALSE: polynomial 0x1021, init 0xFFFF, no reflection, no final XOR.
 
-Constraint: the whole envelope is at most **255 bytes** (deliberate: fixed buffers, small radio packets; raise in a later version if needed). With the 6 bytes of Flags, Type, Sequence and CRC, a payload is at most 249 bytes.
+Constraint: the whole packet is at most **255 bytes** (deliberate: fixed buffers, small radio packets; raise in a later version if needed). With the 6 bytes of Flags, Type, Sequence and CRC, a payload is at most 249 bytes.
 
-### 4.2 COBS
+### 4.2 Byte streams: COBS
 
-The envelope is COBS-encoded (Consistent Overhead Byte Stuffing) so it contains no `0x00` bytes, then followed by a single `0x00` delimiter.
+How packets travel depends on the link:
 
-- A receiver that loses sync just waits for the next `0x00`.
-- Message length is known from the delimiter position, so there is no length field.
-- Messages ≤ 254 bytes cost exactly 1 extra byte, plus the delimiter.
+- **Packet links (WiFi/UDP):** one datagram carries exactly one packet, as is. The datagram boundary marks where it ends.
+- **Byte streams (serial, radio):** the packet is COBS-encoded (Consistent Overhead Byte Stuffing) so it contains no `0x00` bytes, then followed by a single `0x00` delimiter. That is a **frame**.
+  - A receiver that loses sync just waits for the next `0x00`.
+  - Packet length is known from the delimiter position, so there is no length field.
+  - Packets ≤ 254 bytes cost exactly 1 extra byte, plus the delimiter.
 
-**Receive rule:** decode the frame, check length ≤ 255, check CRC, check Flags. Anything that fails is dropped silently (counted for link-quality stats).
+**Receive rule:** on a stream, cut at `0x00` and undo COBS. Then, on every link: check length ≤ 255, check CRC, check Flags. Anything that fails is dropped silently (counted for link-quality stats).
 
-**Example size:** a Sticks message is 6 (envelope) + 8 (payload) + 2 (COBS + delimiter) = **16 bytes** on the wire.
+**Example size:** a Sticks message is 6 (packet header and CRC) + 8 (payload) = 14 bytes as a packet, + 2 (COBS + delimiter) = **16 bytes** as a frame on a byte stream.
 
 ## 5. Message types
 
@@ -118,12 +120,12 @@ The envelope is COBS-encoded (Consistent Overhead Byte Stuffing) so it contains 
 | `0x60–0x6F` | Data streams | `0x60` RequestOnce, `0x61` Subscribe, `0x62` StreamData |
 | `0x70–0x7F` | Logs | `0x70` ListLogs, `0x71` LogList, `0x72` ReadLog, `0x73` LogChunk |
 
-Direction: C→D = client (laptop) to drone, D→C = drone to client. The diagrams below show the **payload** only; every message is wrapped in the envelope of §4.1.
+Direction: C→D = client (laptop) to drone, D→C = drone to client. The diagrams below show the **payload** only; every message is wrapped in the packet of §4.1.
 
 ### 5.0 Requests and answers
 
 - A **request** is any C→D message except Sticks, Hello and Ping: commands, LinkTest, SetSettings, GetSettings, Subscribe, RequestOnce, ListLogs, ReadLog.
-- Every request payload **starts with a Request ID (u16)**, the client picks it by counting up its requests (skipping 0). It tells the drone "this is the same request as before" and lets the client match answers to requests. It is separate from the envelope Sequence.
+- Every request payload **starts with a Request ID (u16)**, the client picks it by counting up its requests (skipping 0). It tells the drone "this is the same request as before" and lets the client match answers to requests. It is separate from the packet Sequence.
 - Every request gets **exactly one answer**: its data message (LinkTestResult, Settings, StreamData, LogList, LogChunk, which echo the Request ID), or a Reply. Errors (unknown stream/group/log ID, bad rate, refused) are always a Reply.
 - **Resending:** if no answer arrives within a timeout, the client resends the request with the **same Request ID** (and a new Sequence). The drone remembers the last 16 Request IDs it handled; a repeat is answered again without executing twice.
 - Data sent without a request (default and subscribed streams) uses Request ID 0.
@@ -271,9 +273,9 @@ where:
 where:
 
 - **Request ID (RID):** 2 bytes, u16. The LinkTest this belongs to.
-- **Filler:** variable length, FS bytes of pseudo-random data (not all zeros: COBS costs differ for zeros, random filler gives a realistic result).
+- **Filler:** variable length, FS bytes of pseudo-random data (not all zeros: on byte streams COBS costs differ for zeros, random filler gives a realistic result).
 
-The sender sends LinkTestData back to back, as fast as the link accepts, for the whole Duration. The envelope Sequence numbers them, so the receiver can count losses.
+The sender sends LinkTestData back to back, as fast as the link accepts, for the whole Duration. The packet Sequence numbers them, so the receiver can count losses.
 
 **LinkTestResult** (`0x07`, D→C, the answer to LinkTest, sent when the test ends):
 
@@ -299,9 +301,9 @@ where:
 
 - **Request ID (RID):** 2 bytes, u16. The LinkTest it answers.
 - **Messages Sent (MS):** 4 bytes, u32. LinkTestData messages the drone sent (0 when the client was sending).
-- **Bytes Sent (BS):** 4 bytes, u32. Bytes the drone put on the wire for them, after COBS.
+- **Bytes Sent (BS):** 4 bytes, u32. Bytes the drone put on the link for them: whole frames on a byte stream, packets over UDP.
 - **Messages Received (MR):** 4 bytes, u32. Valid LinkTestData messages the drone received (0 when the drone was sending).
-- **Bytes Received (BR):** 4 bytes, u32. Bytes of those messages on the wire.
+- **Bytes Received (BR):** 4 bytes, u32. Bytes of those messages on the link, counted the same way as Bytes Sent.
 - **Elapsed (El):** 4 bytes, u32. Drone's time in µs from the first to the last LinkTestData sent or received.
 
 The client puts these next to its own counts to get bytes per second and the loss rate for the tested direction. Sticks keep flowing during a test (client sends test or not), so the drone's link-loss logic is unaffected.
@@ -686,21 +688,27 @@ Two shared crates, both `no_std` (no operating system or heap needed) so the fli
 
 ```
 common/src/
-  domain/      internal state: Sticks, ArmState, Command, LinkHealth, settings values
+  domain.rs    internal state: Sticks, ArmState, Command, LinkHealth, settings values
   wire/        our protocol
-    crc16.rs
-    cobs.rs
-    envelope.rs   Flags / Type / Sequence / (Auth Tag) / CRC
-    message.rs    enum Message { Hello(..), Sticks(..), Flip(..), ... } + encode/decode
+    crc16.rs      (private)
+    cobs.rs       (private)
+    packet.rs     Packet: checked Flags / Type / Sequence / Payload / (Auth Tag) / CRC; PacketError
+    stream.rs     COBS framing for byte streams: stream::encode, StreamDecoder
+    message.rs    enum Message { Hello(..), Sticks(..), Flip(..), ... } + encode / decode; MessageError
     codes.rs      MessageType, Status, ReasonCode, EventCode, StreamId, GroupId
-  crsf/        CRC-8, CRSF frame parsing, CRSF channels → Sticks
+  crsf.rs      CRC-8, CRSF frame parsing, CRSF channels → Sticks
 ```
 
-- The **internal state** types the adapters produce (sticks, pending command, settings changes, link health). They are protocol-neutral: CRSF units (172–1811) only exist inside `crsf/`, which converts them.
+- The **internal state** types the adapters produce (sticks, pending command, settings changes, link health). They are protocol-neutral: CRSF units (172–1811) only exist inside `crsf.rs`, which converts them.
 - A Rust type for every message in §5 with encode/decode. Messages are shaped like the wire; where a message *is* a domain concept (Sticks), it holds the domain type instead of a copy of it.
-- Envelope encode/decode, COBS, CRC-16, fixed 255-byte buffers.
+- Three layers, each with its own type, so the compiler keeps them apart:
+  - `Message::encode(sequence, buf) -> Packet` and `Message::decode(&Packet) -> Result<Message, MessageError>`.
+  - `Packet::parse(bytes) -> Result<Packet, PacketError>` checks length, CRC and flags. A `Packet` can only exist after those checks, so `Message::decode` never sees unchecked bytes. UDP uses this directly.
+  - `stream::encode(&Packet, buf)` and `StreamDecoder::next_packet(&mut chunk)` add and remove COBS on byte streams.
+  - CRC-16 and COBS themselves are private. The sequence counter belongs to the caller.
+  - `PacketError` (damaged or not for us) is dropped silently; `MessageError` (intact but invalid) can be answered, and the caller still holds the packet to do so.
 - Settings group and stream layouts; reason and event codes.
-- Tests: round-trip every message; corrupted/truncated frames are rejected; COBS edge cases (zeros, 254-byte runs, max size).
+- Tests: round-trip every message; corrupted/truncated packets are rejected; COBS edge cases (zeros, 254-byte runs, max size); streams split at every chunk size.
 
 **`drone-link`: behaviour both sides need.** Depends on `drone-common`, never the other way around (Rust forbids circular dependencies between crates, so the boundary enforces itself). Created when its first piece is needed.
 
