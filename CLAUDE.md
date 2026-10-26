@@ -32,6 +32,7 @@ Rust lives in `~/.cargo/bin`, which may not be on `PATH` in a fresh shell (`scri
   no I/O, no clocks. Decoded messages own their data (fixed arrays), no borrowed lifetimes.
 - Behaviour both sides need goes in `drone-link` (created when first needed), never in `drone-common`.
 - Deciding whether to obey a request, timers, I/O: stays in `fc` / `client`.
+- Decoded messages are typed (enums, named `bool`s for bit fields), not raw bytes; see protocol.md §7.1.
 - Incoming data is validated during decoding, always, also in release builds. `debug_assert!` is
   only for our own assumptions. Debug builds may add logs/asserts but never decide differently.
 

@@ -148,15 +148,15 @@ seq 150  Flip, Request ID 7   ← resend: new Sequence, same Request ID
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Protocol Version       |            Options            |
+|    Version    |                    Options                    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|            (cont.)            |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    (cont.)    |
++-+-+-+-+-+-+-+-+
 ```
 
 where:
 
-- **Protocol Version (Ver):** 2 bytes, u16. Starts at 1.
+- **Version (Ver):** 1 byte, u8. Protocol version, starts at 1.
 - **Options (Opt):** 4 bytes, u32. Options the client wants. Bit 0 = authentication. Bits 1–31 free. For now Opt == 0.
 
 **HelloReply** (`0x02`, D→C):
@@ -165,15 +165,15 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|        Protocol Version       |     Result    |    Options    |
+|    Version    |     Result    |            Options            |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                    (cont.)                    |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            (cont.)            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 where:
 
-- **Protocol Version (Ver):** 2 bytes, u16. The drone's version.
+- **Version (Ver):** 1 byte, u8. The drone's protocol version.
 - **Result (R):** 1 byte. One of: 0 = OK, 1 = version mismatch, 2 = option not supported.
 - **Options (Opt):** 4 bytes, u32. The options the drone accepted. When R == 2, the bits the client asked for that are missing here are the unsupported ones.
 
@@ -711,6 +711,7 @@ common/src/
 ### 7.1 Decisions
 
 - **Decoded messages own their data.** Variable-length fields (Event text, LogChunk data, setting group lists, …) are copied out of the receive buffer into a fixed-size array plus a length inside the message. Every message is therefore as big as the biggest one (~250 bytes), which is fine; in return messages can be kept, queued and handed to other threads without Rust lifetimes everywhere. Switching to borrowing from the receive buffer stays possible if copying ever matters.
+- **Decoded messages are typed, not raw bytes.** Codes are enums and bit fields are structs of named `bool`s; plain numbers stay numbers (versions, counts, µs, cm). Unknown codes or bits are only kept (`Unknown(byte)`, `unknown` bits) where the receiver must still see them to answer, e.g. an unknown message type or an unsupported Hello option.
 - **Three kinds of checks:**
   1. **Incoming data** (known enum values, ranges, Request ID != 0, lengths): part of decoding, **always on, also in release builds**, because release is the build that flies. A decoded message is always a valid message.
   2. **Our own assumptions** ("this can never happen", e.g. the encoder's payload fits in 249 bytes): `debug_assert!`, debug builds only.
