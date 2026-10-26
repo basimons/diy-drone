@@ -34,7 +34,7 @@ impl<C: Code> Wire for C {
     }
 }
 
-/// The refusal of requests that are never refused (e.g. Disarm): `Failure::Refused` can't be built for them.
+/// The refusal of requests that are never refused (e.g. Disarm): `Outcome::Refused` can't be built for them.
 impl Code for Infallible {
     type Repr = u16;
 

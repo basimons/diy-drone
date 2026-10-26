@@ -3,7 +3,7 @@ mod support;
 use core::convert::Infallible;
 use drone_common::wire::message::*;
 use drone_common::wire::packet::Packet;
-use drone_common::wire::reply::{Failure, Reason, Reply};
+use drone_common::wire::reply::{Outcome, Reason, Reply};
 use support::*;
 
 const REPLY: u8 = 0x40;
@@ -23,14 +23,14 @@ fn payload(answers: u8, status: u8, reason: u16) -> Vec<u8> {
 #[test]
 fn every_request_type_can_be_answered_ok() {
     let answers: [(Answer, u8); 8] = [
-        (Answer::Arm(Ok(())), 0x20),
-        (Answer::Disarm(Ok(())), 0x21),
-        (Answer::TakeOff(Ok(())), 0x22),
-        (Answer::Land(Ok(())), 0x23),
-        (Answer::GoHome(Ok(())), 0x24),
-        (Answer::Flip(Ok(())), 0x25),
-        (Answer::SteadyState(Ok(())), 0x26),
-        (Answer::ExitSteadyState(Ok(())), 0x27),
+        (Answer::Arm(Outcome::Ok), 0x20),
+        (Answer::Disarm(Outcome::Ok), 0x21),
+        (Answer::TakeOff(Outcome::Ok), 0x22),
+        (Answer::Land(Outcome::Ok), 0x23),
+        (Answer::GoHome(Outcome::Ok), 0x24),
+        (Answer::Flip(Outcome::Ok), 0x25),
+        (Answer::SteadyState(Outcome::Ok), 0x26),
+        (Answer::ExitSteadyState(Outcome::Ok), 0x27),
     ];
     for (answer, answers) in answers {
         check_round_trip(reply(answer), REPLY, &payload(answers, 0, 0));
@@ -40,13 +40,13 @@ fn every_request_type_can_be_answered_ok() {
 #[test]
 fn every_refusal_with_its_reason() {
     fn arm(r: ArmRefusal) -> Answer {
-        return Answer::Arm(Err(Failure::Refused(r)));
+        return Answer::Arm(Outcome::Refused(r));
     }
     fn take_off(r: TakeOffRefusal) -> Answer {
-        return Answer::TakeOff(Err(Failure::Refused(r)));
+        return Answer::TakeOff(Outcome::Refused(r));
     }
     fn flip(r: FlipRefusal) -> Answer {
-        return Answer::Flip(Err(Failure::Refused(r)));
+        return Answer::Flip(Outcome::Refused(r));
     }
     let cases = [
         (arm(ArmRefusal::BatteryLow), 0x20, 4),
@@ -55,12 +55,12 @@ fn every_refusal_with_its_reason() {
         (arm(ArmRefusal::ArmSwitchOff), 0x20, 7),
         (take_off(TakeOffRefusal::NotArmed), 0x22, 1),
         (take_off(TakeOffRefusal::BatteryLow), 0x22, 4),
-        (Answer::Land(Err(Failure::Refused(LandRefusal::NotFlying))), 0x23, 2),
+        (Answer::Land(Outcome::Refused(LandRefusal::NotFlying)), 0x23, 2),
         (flip(FlipRefusal::NotArmed), 0x25, 1),
         (flip(FlipRefusal::NotFlying), 0x25, 2),
         (flip(FlipRefusal::TooLow), 0x25, 3),
         (
-            Answer::SteadyState(Err(Failure::Refused(SteadyStateRefusal::NotFlying))),
+            Answer::SteadyState(Outcome::Refused(SteadyStateRefusal::NotFlying)),
             0x26,
             2,
         ),
@@ -84,24 +84,24 @@ fn a_reason_has_one_number_for_every_request() {
         Reason::from(LandRefusal::NotFlying),
         Reason::from(SteadyStateRefusal::NotFlying)
     );
-    let take_off = reply(Answer::TakeOff(Err(Failure::Refused(TakeOffRefusal::NotArmed))));
-    let flip = reply(Answer::Flip(Err(Failure::Refused(FlipRefusal::NotArmed))));
+    let take_off = reply(Answer::TakeOff(Outcome::Refused(TakeOffRefusal::NotArmed)));
+    let flip = reply(Answer::Flip(Outcome::Refused(FlipRefusal::NotArmed)));
     check_round_trip(take_off, REPLY, &payload(0x22, 1, 1));
     check_round_trip(flip, REPLY, &payload(0x25, 1, 1));
 }
 
 #[test]
 fn failures_without_a_reason() {
-    let cases: [(Failure<Infallible>, u8); 3] = [
-        (Failure::NotSupported, 4),
-        (Failure::Busy, 5),
-        (Failure::NotAllowedNow, 6), // e.g. in steady state
+    let cases: [(Outcome<Infallible>, u8); 3] = [
+        (Outcome::NotSupported, 4),
+        (Outcome::Busy, 5),
+        (Outcome::NotAllowedNow, 6), // e.g. in steady state
     ];
     for (failure, status) in cases {
-        check_round_trip(reply(Answer::Disarm(Err(failure))), REPLY, &payload(0x21, status, 0));
-        check_round_trip(reply(Answer::GoHome(Err(failure))), REPLY, &payload(0x24, status, 0));
+        check_round_trip(reply(Answer::Disarm(failure)), REPLY, &payload(0x21, status, 0));
+        check_round_trip(reply(Answer::GoHome(failure)), REPLY, &payload(0x24, status, 0));
         check_round_trip(
-            reply(Answer::ExitSteadyState(Err(failure))),
+            reply(Answer::ExitSteadyState(failure)),
             REPLY,
             &payload(0x27, status, 0),
         );
@@ -115,7 +115,7 @@ fn reply_to_takes_request_id_and_type_from_the_request() {
         direction: 0,
         duration_ms: 300,
     };
-    let refused = Err(Failure::Refused(FlipRefusal::TooLow));
+    let refused = Outcome::Refused(FlipRefusal::TooLow);
     assert_eq!(
         Reply::to(&flip, refused),
         Reply {
@@ -126,7 +126,7 @@ fn reply_to_takes_request_id_and_type_from_the_request() {
     let arm = Arm {
         request_id: RequestId(10),
     };
-    assert_eq!(Reply::to(&arm, Ok(())).answer, Answer::Arm(Ok(())));
+    assert_eq!(Reply::to(&arm, Outcome::Ok).answer, Answer::Arm(Outcome::Ok));
 }
 
 #[test]
@@ -200,7 +200,7 @@ fn unknown_type_never_holds_a_known_type() {
 fn request_id_0_is_valid() {
     let message = Message::Reply(Reply {
         request_id: RequestId(0),
-        answer: Answer::Land(Ok(())),
+        answer: Answer::Land(Outcome::Ok),
     });
     check_round_trip(message, REPLY, &[0, 0, 0x23, 0, 0, 0]);
 }

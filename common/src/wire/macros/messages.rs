@@ -69,7 +69,7 @@ macro_rules! messages {
                     return self.request_id;
                 }
 
-                fn answer(outcome: Result<(), Failure<Self::Refusal>>) -> Answer {
+                fn answer(outcome: Outcome<Self::Refusal>) -> Answer {
                     return Answer::$request(outcome);
                 }
             }
@@ -92,7 +92,7 @@ macro_rules! messages {
         /// and Reason in a way the protocol doesn't allow.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum Answer {
-            $($request(Result<(), Failure<<$request as Request>::Refusal>>),)*
+            $($request(Outcome<<$request as Request>::Refusal>),)*
             Malformed(RequestType),   // the request didn't decode; never a Reason
             UnknownType(UnknownType), // always Status "unknown type", never a Reason
         }
@@ -142,7 +142,7 @@ macro_rules! messages {
             /// The Answer of this request with this Status and Reason.
             fn answer(self, status: Status, reason: u16) -> Result<Answer, MessageError> {
                 return match self {
-                    $(RequestType::$request => Ok(Answer::$request(outcome_from_wire(status, reason)?)),)*
+                    $(RequestType::$request => Ok(Answer::$request(Outcome::from_wire(status, reason)?)),)*
                 };
             }
         }
@@ -151,7 +151,7 @@ macro_rules! messages {
             /// Answers Type, Status and Reason.
             pub(crate) fn to_wire(self) -> (u8, (Status, u16)) {
                 return match self {
-                    $(Answer::$request(outcome) => ($request_type, outcome_to_wire(outcome)),)*
+                    $(Answer::$request(outcome) => ($request_type, outcome.to_wire()),)*
                     Answer::Malformed(request) => (request.type_byte(), (Status::Malformed, 0)),
                     Answer::UnknownType(unknown) => (unknown.0, (Status::UnknownType, 0)),
                 };

@@ -818,7 +818,7 @@ common/src/
     message.rs    the list of messages: each message's struct, type byte and (for requests) refusal codes, written once;
                   enum Message { Hello(..), Sticks(..), Arm(..), ... } + encode / decode; Answer; Request; MessageError
     reply.rs      Reply { request_id, answer: Answer }: typed per request; Reply::to(&request, outcome);
-                  Reply::to_invalid(&packet) for "malformed" / "unknown type"; Failure
+                  Reply::to_invalid(&packet) for "malformed" / "unknown type"; Outcome
     event.rs      the list of events (Armed, BatteryLow { millivolts }, ...) with code and level, written once;
                   Text with EventText, a string that needs no heap
     payload.rs    (private) Wire: how each field reads and writes itself; Code: enums stored as numbers

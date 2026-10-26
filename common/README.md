@@ -60,7 +60,7 @@ can be said, so there are no status bytes or reason numbers to get wrong.
 ```rust
 use drone_common::wire::event::{BatteryLow, Event, EventLevel, EventText, Text};
 use drone_common::wire::message::{Answer, Flip, FlipRefusal, Message, RequestId};
-use drone_common::wire::reply::{Failure, Reply};
+use drone_common::wire::reply::{Outcome, Reply};
 
 // Client: ask for a flip. Every request starts with a Request ID; a resend keeps the same ID.
 let flip = Flip {
@@ -71,12 +71,12 @@ let flip = Flip {
 let received = Message::Flip(flip);
 
 // Drone: decide, then answer. `Reply::to` copies the Request ID and type from the request, and a Flip only
-// accepts a `FlipRefusal`: `Failure::Refused(ArmRefusal::BatteryLow)` doesn't compile.
+// accepts a `FlipRefusal`: `Outcome::Refused(ArmRefusal::BatteryLow)` doesn't compile.
 let reply = match received {
-    Message::Flip(flip) => Reply::to(&flip, Err(Failure::Refused(FlipRefusal::TooLow))),
-    Message::Arm(arm) => Reply::to(&arm, Ok(())),
-    // Disarm is never refused: `Failure::Refused` can't be built for it, `Failure::Busy` can.
-    Message::Disarm(disarm) => Reply::to(&disarm, Err(Failure::Busy)),
+    Message::Flip(flip) => Reply::to(&flip, Outcome::Refused(FlipRefusal::TooLow)),
+    Message::Arm(arm) => Reply::to(&arm, Outcome::Ok),
+    // Disarm is never refused: `Outcome::Refused` can't be built for it, `Outcome::Busy` can.
+    Message::Disarm(disarm) => Reply::to(&disarm, Outcome::Busy),
     _ => return,
 };
 
@@ -88,9 +88,9 @@ let note = Event::Text(Text { level: EventLevel::Info, text });
 // Client: handle what comes back.
 for message in [Message::Reply(reply), Message::Event(battery), Message::Event(note)] {
     match message {
-        Message::Reply(Reply { request_id, answer: Answer::Flip(Ok(())) }) => println!("{request_id:?}: flipping"),
-        Message::Reply(Reply { request_id, answer: Answer::Flip(Err(failure)) }) => {
-            println!("{request_id:?}: no flip, {failure:?}") // RequestId(7): no flip, Refused(TooLow)
+        Message::Reply(Reply { request_id, answer: Answer::Flip(Outcome::Ok) }) => println!("{request_id:?}: flipping"),
+        Message::Reply(Reply { request_id, answer: Answer::Flip(outcome) }) => {
+            println!("{request_id:?}: no flip, {outcome:?}") // RequestId(7): no flip, Refused(TooLow)
         }
         Message::Event(Event::Text(Text { level, text })) => println!("{level:?}: {text}"), // Info: cell 3 at 3.4 V
         Message::Event(event) => println!("{:?}: {event:?}", event.level()), // Warning: BatteryLow(BatteryLow { millivolts: 14000 })
@@ -107,7 +107,7 @@ for a type this build doesn't know (protocol.md §5.4).
 | Module | Public items | What it is |
 |--------|--------------|------------|
 | `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Arm`, `Flip`, …), `HelloResult`, the refusal codes (`ArmRefusal`, …), `Request`, `RequestId`, `Answer`, `RequestType`, `UnknownType`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode`. Each message is defined once, in one list |
-| `wire::reply` | `Reply`, `Failure`, `Reason` | The drone's answer to a request, typed per request: only combinations the protocol allows can be built. Every refusal enum (`FlipRefusal`, …) converts into the shared `Reason`, so the client can handle any refusal in one place. `Reply::to(&request, outcome)` takes the Request ID and type from the request; `Reply::to_invalid(&packet)` answers a packet that didn't decode |
+| `wire::reply` | `Reply`, `Outcome`, `Reason` | The drone's answer to a request, typed per request: only combinations the protocol allows can be built. Every refusal enum (`FlipRefusal`, …) converts into the shared `Reason`, so the client can handle any refusal in one place. `Reply::to(&request, outcome)` takes the Request ID and type from the request; `Reply::to_invalid(&packet)` answers a packet that didn't decode |
 | `wire::event` | `Event`, one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `EventLevel`, `FailsafeCause`, `Text`, `EventText`, `EventKind` | What the drone reports on its own; each event holds only its own data. `EventText` is a string without heap: use it like a `&str`, build it with `EventText::format(format_args!(…))` |
 | `wire::packet` | `Packet`, `PacketError`, `MAX_PACKET_LEN` | A checked packet: `parse`, `sequence`, `as_bytes` |
 | `wire::stream` | `encode`, `StreamDecoder`, `MAX_FRAME_LEN` | COBS framing; only needed on byte streams |

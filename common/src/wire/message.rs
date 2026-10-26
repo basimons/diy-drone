@@ -4,7 +4,7 @@ use crate::wire::event::Event;
 use crate::wire::macros::{code, messages};
 use crate::wire::packet::{MAX_PACKET_LEN, Packet};
 use crate::wire::payload::{Code, Reader, Wire, Writer};
-use crate::wire::reply::{Failure, Reason, Reply, Status, outcome_from_wire, outcome_to_wire};
+use crate::wire::reply::{Outcome, Reason, Reply, Status};
 
 /// Why an intact packet is not a valid message. Unlike a `PacketError`, the sender can be told (protocol.md §5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -128,7 +128,7 @@ pub trait Request: sealed::Sealed {
     fn request_id(&self) -> RequestId;
 
     /// The `Answer` variant for this request.
-    fn answer(outcome: Result<(), Failure<Self::Refusal>>) -> Answer;
+    fn answer(outcome: Outcome<Self::Refusal>) -> Answer;
 }
 
 messages! {
