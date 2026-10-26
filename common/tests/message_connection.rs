@@ -1,7 +1,6 @@
 mod support;
 
 use drone_common::wire::codes::HelloResult;
-use drone_common::wire::frame::{FrameError, Received};
 use drone_common::wire::message::*;
 use support::*;
 
@@ -12,8 +11,8 @@ const PONG: u8 = 0x04;
 const MAX_PAYLOAD_LEN: usize = 249; // protocol.md §4.1
 
 /// Decodes a hand-built frame with sequence 0.
-fn decode(message_type: u8, payload: &[u8]) -> Result<Message, FrameError> {
-    return read_one(&frame(0, message_type, 0, payload)).map(|r| return r.message);
+fn decode(message_type: u8, payload: &[u8]) -> Result<Message, DecodeError> {
+    return Message::decode(&frame(0, message_type, 0, payload)).map(|r| return r.message);
 }
 
 /// Encodes `message`, checks it against a hand-built frame, and checks it decodes back to `message`.
@@ -22,7 +21,7 @@ fn check(message: Message, message_type: u8, payload: &[u8]) {
     let sequence = if handshake { 0 } else { 42 };
     let encoded = encode(&message, 42);
     assert_eq!(encoded, frame(0, message_type, sequence, payload));
-    assert_eq!(read_one(&encoded), Ok(Received { sequence, message }));
+    assert_eq!(Message::decode(&encoded), Ok(Received { sequence, message }));
 }
 
 #[test]
@@ -86,12 +85,12 @@ fn hello_and_hello_reply_always_use_sequence_0() {
         protocol_version: 1,
         options: Options::default(),
     });
-    assert_eq!(read_one(&encode(&hello, 9)).map(|r| return r.sequence), Ok(0));
+    assert_eq!(Message::decode(&encode(&hello, 9)).map(|r| return r.sequence), Ok(0));
     for (message_type, payload) in [(HELLO, vec![1, 0, 0, 0, 0]), (HELLO_REPLY, vec![1, 0, 0, 0, 0, 0])] {
-        let decoded = read_one(&frame(0, message_type, 7, &payload));
+        let decoded = Message::decode(&frame(0, message_type, 7, &payload));
         assert_eq!(
             decoded,
-            Err(FrameError::InvalidValue),
+            Err(DecodeError::InvalidValue),
             "type {message_type} with sequence 7"
         );
     }
@@ -117,7 +116,7 @@ fn hello_reply_every_result() {
 fn hello_reply_rejects_unknown_result() {
     for byte in [3, 0xFF] {
         let decoded = decode(HELLO_REPLY, &[1, byte, 0, 0, 0, 0]);
-        assert_eq!(decoded, Err(FrameError::InvalidValue), "result {byte}");
+        assert_eq!(decoded, Err(DecodeError::InvalidValue), "result {byte}");
     }
 }
 
@@ -148,7 +147,7 @@ fn rejects_wrong_payload_length() {
             let decoded = decode(message_type, &vec![0; wrong]);
             assert_eq!(
                 decoded,
-                Err(FrameError::WrongLength),
+                Err(DecodeError::WrongLength),
                 "type {message_type} with {wrong} bytes"
             );
         }

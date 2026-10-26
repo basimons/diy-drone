@@ -1,4 +1,4 @@
-use drone_common::protocol::crc8_dvb_s2;
+use drone_common::crsf::crc8_dvb_s2;
 
 #[test]
 fn crc8_matches_standard_check_value() {

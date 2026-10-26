@@ -1,8 +1,8 @@
 //! Test helpers that build frames by hand, independently of the library's own CRC and COBS code.
 #![allow(dead_code)] // each test file uses a different subset
 
-use drone_common::wire::frame::{FrameError, FrameReader, MAX_FRAME_LEN, Push, Received};
-use drone_common::wire::message::Message;
+use drone_common::wire::message::{DecodeError, MAX_ENCODED_LEN, Message, Received};
+use drone_common::wire::splitter::FrameSplitter;
 
 /// CRC-16/CCITT-FALSE, written out bit by bit.
 pub fn crc16(data: &[u8]) -> u16 {
@@ -54,27 +54,31 @@ pub fn with_crc_framed(mut envelope: Vec<u8>) -> Vec<u8> {
 }
 
 pub fn encode(message: &Message, sequence: u16) -> Vec<u8> {
-    let mut out = [0u8; MAX_FRAME_LEN];
-    let len = message.encode_frame(sequence, &mut out);
+    let mut out = [0u8; MAX_ENCODED_LEN];
+    let len = message.encode(sequence, &mut out);
     return out[..len].to_vec();
 }
 
-/// The result of every completed frame in `bytes`, in order.
-pub fn read_all(bytes: &[u8]) -> Vec<Result<Received, FrameError>> {
-    let mut reader = FrameReader::new();
-    let mut results = Vec::new();
-    for &byte in bytes {
-        match reader.push(byte) {
-            Push::NeedMore => {}
-            Push::Frame(received) => results.push(Ok(received)),
-            Push::Rejected(error) => results.push(Err(error)),
+/// Feeds `bytes` to one splitter in chunks of `chunk_size` and returns every frame it produced, in order.
+pub fn split(bytes: &[u8], chunk_size: usize) -> Vec<Result<Vec<u8>, DecodeError>> {
+    let mut splitter = FrameSplitter::new();
+    let mut frames = Vec::new();
+    for mut chunk in bytes.chunks(chunk_size) {
+        while let Some(frame) = splitter.next_frame(&mut chunk) {
+            frames.push(frame.map(|f| return f.to_vec()));
         }
+        assert!(chunk.is_empty(), "next_frame returned None before using up the chunk");
     }
-    return results;
+    return frames;
 }
 
-pub fn read_one(bytes: &[u8]) -> Result<Received, FrameError> {
-    let results = read_all(bytes);
-    assert_eq!(results.len(), 1, "expected exactly one frame, got {results:?}");
-    return results[0];
+/// Splits `bytes` (as one chunk) and decodes every frame, the way a stream transport would.
+pub fn read_all(bytes: &[u8]) -> Vec<Result<Received, DecodeError>> {
+    let mut splitter = FrameSplitter::new();
+    let mut chunk = bytes;
+    let mut results = Vec::new();
+    while let Some(frame) = splitter.next_frame(&mut chunk) {
+        results.push(frame.and_then(Message::decode));
+    }
+    return results;
 }

@@ -2,7 +2,8 @@
 
 use crate::wire::codes::{HelloResult, MessageType};
 use crate::wire::envelope::{Envelope, MAX_PAYLOAD_LEN};
-use crate::wire::frame::{FrameError, MAX_FRAME_LEN};
+
+pub use crate::wire::envelope::{DecodeError, MAX_ENCODED_LEN};
 
 /// Hello/HelloReply options (protocol.md §5.1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -60,8 +61,15 @@ pub enum Message {
     Pong(Pong),
 }
 
+/// A decoded message plus the sender's sequence number, for gap and stale-message detection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Received {
+    pub sequence: u16,
+    pub message: Message,
+}
+
 impl Message {
-    pub fn message_type(&self) -> MessageType {
+    fn message_type(&self) -> MessageType {
         return match self {
             Message::Hello(_) => MessageType::Hello,
             Message::HelloReply(_) => MessageType::HelloReply,
@@ -70,10 +78,19 @@ impl Message {
         };
     }
 
-    /// The whole frame, ready to send. Hello and HelloReply always get Sequence 0 (protocol.md §5.1), whatever
-    /// `sequence` is. Returns the number of bytes written.
-    pub fn encode_frame(&self, sequence: u16, out: &mut [u8; MAX_FRAME_LEN]) -> usize {
-        return self.envelope(sequence).encode_frame(out);
+    /// Writes the whole frame, `0x00` delimiter included, and returns its length. Hello and HelloReply always get
+    /// Sequence 0 (protocol.md §5.1), whatever `sequence` is.
+    pub fn encode(&self, sequence: u16, out: &mut [u8; MAX_ENCODED_LEN]) -> usize {
+        return self.envelope(sequence).encode(out);
+    }
+
+    /// `frame` is one frame as `encode` writes it, `0x00` delimiter included.
+    pub fn decode(frame: &[u8]) -> Result<Received, DecodeError> {
+        let envelope = Envelope::decode(frame)?;
+        return Ok(Received {
+            sequence: envelope.sequence(),
+            message: Self::from_envelope(&envelope)?,
+        });
     }
 
     fn envelope(&self, sequence: u16) -> Envelope {
@@ -99,9 +116,9 @@ impl Message {
         return Envelope::new(self.message_type(), sequence, w.written());
     }
 
-    pub(crate) fn decode(envelope: &Envelope) -> Result<Self, FrameError> {
+    fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
         if is_handshake(envelope.message_type()) && envelope.sequence() != 0 {
-            return Err(FrameError::InvalidValue);
+            return Err(DecodeError::InvalidValue);
         }
         let mut r = Reader {
             bytes: envelope.payload(),
@@ -113,7 +130,7 @@ impl Message {
             }),
             MessageType::HelloReply => Message::HelloReply(HelloReply {
                 protocol_version: r.u8()?,
-                result: HelloResult::try_from(r.u8()?).map_err(|_| return FrameError::InvalidValue)?,
+                result: HelloResult::try_from(r.u8()?).map_err(|_| return DecodeError::InvalidValue)?,
                 options: Options::from_bits(r.u32()?),
             }),
             MessageType::Ping => Message::Ping(Ping { timestamp: r.u32()? }),
@@ -123,10 +140,10 @@ impl Message {
                 send_time: r.u32()?,
             }),
             // Types without a Rust message yet are treated as unknown until they are added.
-            other => return Err(FrameError::UnknownType(u8::from(other))),
+            other => return Err(DecodeError::UnknownType(u8::from(other))),
         };
         if !r.bytes.is_empty() {
-            return Err(FrameError::WrongLength);
+            return Err(DecodeError::WrongLength);
         }
         return Ok(message);
     }
@@ -142,17 +159,17 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], FrameError> {
-        let (head, rest) = self.bytes.split_first_chunk::<N>().ok_or(FrameError::WrongLength)?;
+    fn take<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
+        let (head, rest) = self.bytes.split_first_chunk::<N>().ok_or(DecodeError::WrongLength)?;
         self.bytes = rest;
         return Ok(*head);
     }
 
-    fn u8(&mut self) -> Result<u8, FrameError> {
+    fn u8(&mut self) -> Result<u8, DecodeError> {
         return Ok(self.take::<1>()?[0]);
     }
 
-    fn u32(&mut self) -> Result<u32, FrameError> {
+    fn u32(&mut self) -> Result<u32, DecodeError> {
         return Ok(u32::from_le_bytes(self.take()?));
     }
 }

@@ -7,39 +7,44 @@ The protocol itself is described in [../protocol.md](../protocol.md); §7 there 
 ## What you use
 
 ```rust
-use drone_common::wire::frame::{FrameReader, MAX_FRAME_LEN, Push};
-use drone_common::wire::message::{Message, Ping};
+use drone_common::wire::message::{MAX_ENCODED_LEN, Message, Ping};
+use drone_common::wire::splitter::FrameSplitter;
 
 // Sending: a message plus your sequence number in, ready-to-send bytes out.
-let mut buf = [0u8; MAX_FRAME_LEN];
-let len = Message::Ping(Ping { timestamp: 1234 }).encode_frame(sequence, &mut buf);
+let mut buf = [0u8; MAX_ENCODED_LEN];
+let len = Message::Ping(Ping { timestamp: 1234 }).encode(sequence, &mut buf);
 port.write_all(&buf[..len])?;
 
-// Receiving: feed bytes in as they arrive, one at a time.
-let mut reader = FrameReader::new();
-for &byte in &received_bytes {
-    match reader.push(byte) {
-        Push::NeedMore => {}                               // no complete frame yet
-        Push::Frame(received) => handle(received.sequence, received.message),
-        Push::Rejected(error) => stats.count(error),       // dropped frame, e.g. FrameError::BadCrc
+// Receiving from a byte stream (serial, radio): reads arrive in chunks of any size,
+// so the splitter cuts them into frames, then each frame is decoded.
+let mut splitter = FrameSplitter::new();
+let n = port.read(&mut read_buf)?;
+let mut chunk = &read_buf[..n];
+while let Some(frame) = splitter.next_frame(&mut chunk) {
+    match frame.and_then(Message::decode) {
+        Ok(received) => handle(received.sequence, received.message),
+        Err(error) => stats.count(error), // dropped, e.g. DecodeError::BadCrc
     }
 }
+
+// Receiving over UDP: one packet is one frame, so no splitter.
+let received = Message::decode(&packet)?;
 ```
 
 | Module | Public items | What it is |
 |--------|--------------|------------|
-| `wire::message` | `Message` and one struct per message (`Hello`, `HelloReply`, `Ping`, `Pong`, …) | The messages of protocol.md §5, as typed Rust values |
-| `wire::frame` | `FrameReader`, `Push`, `Received`, `FrameError`, `MAX_FRAME_LEN` | Turning a byte stream into messages |
+| `wire::message` | `Message`, one struct per message (`Hello`, `HelloReply`, `Ping`, `Pong`, …), `Received`, `DecodeError`, `MAX_ENCODED_LEN` | The messages of protocol.md §5 and their `encode` / `decode` |
+| `wire::splitter` | `FrameSplitter` | Cuts a byte stream into frames; only needed on stream transports |
 | `wire::codes` | `MessageType`, `HelloResult`, … | The numeric codes used inside messages |
 | `domain` | `RcChannels`, `ArmState`, … | Protocol-neutral state: what the sticks say, armed or not |
-| `protocol` | CRSF constants and CRC-8 | CRSF (Crossfire), the radio protocol between the ELRS receiver and the FC |
+| `crsf` | CRSF constants and CRC-8 | CRSF (Crossfire), the radio protocol between the ELRS receiver and the FC |
 
 ## What is hidden
 
 Every message travels inside an *envelope* (flags, type, sequence number, payload, CRC-16 checksum, protocol.md §4.1).
 The envelope is then COBS-encoded (Consistent Overhead Byte Stuffing, §4.2): all `0x00` bytes are removed so that a
-single `0x00` can mark the end of each frame. Both steps happen inside `encode_frame` and `FrameReader`, so the
-envelope, CRC and COBS code are private.
+single `0x00` can mark the end of each frame. Both steps happen inside `Message::encode` and `Message::decode`, so
+the envelope, CRC and COBS code are private. The splitter only knows that frames end at `0x00`.
 
 ## What is not in here
 
@@ -51,7 +56,7 @@ envelope, CRC and COBS code are private.
 ## Tests
 
 Tests are in `tests/` and use only the public API. `tests/support/` builds frames by hand, with its own CRC-16 and
-COBS code, so the library is checked against an independent implementation. `tests/frame.rs` also pins exact
+COBS code, so the library is checked against an independent implementation. `tests/encoding.rs` also pins exact
 frame bytes computed outside Rust.
 
 ```sh

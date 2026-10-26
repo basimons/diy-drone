@@ -1,8 +1,7 @@
-//! Framing (protocol.md §4): envelope, CRC-16 and COBS, through `Message::encode_frame` and `FrameReader`.
+//! One frame (protocol.md §4: envelope, CRC-16, COBS) through `Message::encode` and `Message::decode`.
 mod support;
 
-use drone_common::wire::frame::{FrameError, FrameReader, MAX_FRAME_LEN, Push, Received};
-use drone_common::wire::message::{Message, Ping, Pong};
+use drone_common::wire::message::{DecodeError, Message, Ping, Pong, Received};
 use support::*;
 
 const PING: Message = Message::Ping(Ping { timestamp: 0x11223344 });
@@ -40,15 +39,10 @@ fn pong_frame_is_20_bytes_with_only_a_trailing_zero() {
 }
 
 #[test]
-fn every_byte_before_the_delimiter_needs_more() {
-    let bytes = encode(&PING, 5);
-    let mut reader = FrameReader::new();
-    for &byte in &bytes[..bytes.len() - 1] {
-        assert_eq!(reader.push(byte), Push::NeedMore);
-    }
+fn decode_returns_sequence_and_message() {
     assert_eq!(
-        reader.push(0),
-        Push::Frame(Received {
+        Message::decode(&encode(&PING, 5)),
+        Ok(Received {
             sequence: 5,
             message: PING
         })
@@ -56,10 +50,51 @@ fn every_byte_before_the_delimiter_needs_more() {
 }
 
 #[test]
+fn decode_rejects_a_frame_without_its_delimiter() {
+    let bytes = encode(&PING, 5);
+    assert_eq!(Message::decode(&bytes[..bytes.len() - 1]), Err(DecodeError::BadCobs));
+}
+
+#[test]
+fn decode_rejects_empty_input() {
+    assert_eq!(Message::decode(&[]), Err(DecodeError::BadCobs));
+    assert_eq!(Message::decode(&[0x00]), Err(DecodeError::TooShort));
+}
+
+#[test]
+fn decode_rejects_zeros_other_than_the_one_delimiter() {
+    // Possible over UDP, where a packet goes to decode without the splitter.
+    let bytes = encode(&PING, 5);
+    assert_eq!(
+        Message::decode(&[bytes.as_slice(), &[0]].concat()),
+        Err(DecodeError::BadCobs)
+    );
+    let mut zero_inside = bytes.clone();
+    zero_inside[4] = 0;
+    assert_eq!(Message::decode(&zero_inside), Err(DecodeError::BadCobs));
+}
+
+#[test]
+fn decode_never_panics_on_garbage() {
+    // Release builds fly, so arbitrary bytes from the radio must only ever give an error.
+    let mut state: u32 = 7;
+    for len in 0..600 {
+        let bytes: Vec<u8> = (0..len)
+            .map(|_| {
+                state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                return (state >> 16) as u8;
+            })
+            .collect();
+        let _ = Message::decode(&bytes);
+        let _ = Message::decode(&[bytes.as_slice(), &[0]].concat());
+    }
+}
+
+#[test]
 fn sequence_comes_back_unchanged() {
     for sequence in [1, 0x1234, 65535] {
         assert_eq!(
-            read_one(&encode(&PING, sequence)).map(|r| return r.sequence),
+            Message::decode(&encode(&PING, sequence)).map(|r| return r.sequence),
             Ok(sequence)
         );
     }
@@ -68,8 +103,8 @@ fn sequence_comes_back_unchanged() {
 #[test]
 fn rejects_too_short() {
     assert_eq!(
-        read_one(&with_crc_framed(vec![0x00, 0x03, 0x00])),
-        Err(FrameError::TooShort)
+        Message::decode(&with_crc_framed(vec![0x00, 0x03, 0x00])),
+        Err(DecodeError::TooShort)
     );
 }
 
@@ -77,7 +112,7 @@ fn rejects_too_short() {
 fn rejects_more_than_255_bytes() {
     let envelope: Vec<u8> = [0x00, 0xEE, 0x00, 0x00].into_iter().chain([1; 250]).collect();
     let bytes = with_crc_framed(envelope);
-    assert_eq!(read_one(&bytes), Err(FrameError::TooLong));
+    assert_eq!(Message::decode(&bytes), Err(DecodeError::TooLong));
 }
 
 #[test]
@@ -86,8 +121,8 @@ fn accepts_exactly_255_bytes() {
     for payload in [[0u8; 249], [1u8; 249]] {
         let bytes = frame(0, 0xEE, 0, &payload);
         assert_eq!(
-            read_one(&bytes),
-            Err(FrameError::UnknownType(0xEE)),
+            Message::decode(&bytes),
+            Err(DecodeError::UnknownType(0xEE)),
             "payload {}",
             payload[0]
         );
@@ -111,7 +146,7 @@ fn decodes_a_254_byte_run_that_ends_the_frame() {
     // After the flags byte, all 254 bytes are non-zero: one full COBS block (code 0xFF) and nothing after it.
     let bytes = frame(0, 0xEE, sequence_without_zeros(0), &[1; 249]);
     assert_eq!(bytes[1], 0xFF);
-    assert_eq!(read_one(&bytes), Err(FrameError::UnknownType(0xEE)));
+    assert_eq!(Message::decode(&bytes), Err(DecodeError::UnknownType(0xEE)));
 }
 
 #[test]
@@ -120,7 +155,7 @@ fn decodes_a_254_byte_run_followed_by_more_data() {
     // Flags are checked after COBS and CRC, so UnsupportedFlags shows the frame got that far.
     let bytes = frame(0x01, 0xEE, sequence_without_zeros(0x01), &[1; 249]);
     assert_eq!(bytes[0], 0xFF);
-    assert_eq!(read_one(&bytes), Err(FrameError::UnsupportedFlags));
+    assert_eq!(Message::decode(&bytes), Err(DecodeError::UnsupportedFlags));
 }
 
 #[test]
@@ -136,8 +171,8 @@ fn decodes_zero_heavy_payloads_of_every_length() {
             })
             .collect();
         assert_eq!(
-            read_one(&frame(0, 0xEE, 0, &payload)),
-            Err(FrameError::UnknownType(0xEE)),
+            Message::decode(&frame(0, 0xEE, 0, &payload)),
+            Err(DecodeError::UnknownType(0xEE)),
             "payload of {len} bytes"
         );
     }
@@ -152,8 +187,8 @@ fn rejects_a_flipped_bit_in_any_byte_as_bad_crc() {
         let mut corrupted = envelope.clone();
         corrupted[index] ^= 0x01;
         assert_eq!(
-            read_one(&cobs_frame(&corrupted)),
-            Err(FrameError::BadCrc),
+            Message::decode(&cobs_frame(&corrupted)),
+            Err(DecodeError::BadCrc),
             "byte {index} flipped"
         );
     }
@@ -162,108 +197,20 @@ fn rejects_a_flipped_bit_in_any_byte_as_bad_crc() {
 #[test]
 fn rejects_flags_until_authentication_exists() {
     let bytes = frame(0x01, 0x03, 0, &[0x44, 0x33, 0x22, 0x11]);
-    assert_eq!(read_one(&bytes), Err(FrameError::UnsupportedFlags));
+    assert_eq!(Message::decode(&bytes), Err(DecodeError::UnsupportedFlags));
 }
 
 #[test]
 fn reports_unknown_type_with_its_byte() {
     // The drone answers with Reply "unknown type", so it must see the byte.
-    assert_eq!(read_one(&frame(0, 0xEE, 1, &[])), Err(FrameError::UnknownType(0xEE)));
+    assert_eq!(
+        Message::decode(&frame(0, 0xEE, 1, &[])),
+        Err(DecodeError::UnknownType(0xEE))
+    );
 }
 
 #[test]
 fn rejects_broken_cobs() {
     // Code byte 0x05 promises four data bytes, only two follow.
-    assert_eq!(read_one(&[0x05, 0x11, 0x22, 0x00]), Err(FrameError::BadCobs));
-}
-
-#[test]
-fn reader_returns_frames_sent_back_to_back() {
-    let bytes = [encode(&PING, 1), encode(&PING, 2)].concat();
-    assert_eq!(
-        read_all(&bytes),
-        vec![
-            Ok(Received {
-                sequence: 1,
-                message: PING
-            }),
-            Ok(Received {
-                sequence: 2,
-                message: PING
-            })
-        ]
-    );
-}
-
-#[test]
-fn reader_ignores_empty_frames() {
-    let bytes = [vec![0, 0, 0], encode(&PING, 1), vec![0]].concat();
-    assert_eq!(read_all(&bytes).len(), 1);
-}
-
-#[test]
-fn reader_recovers_after_garbage() {
-    // Joining mid-frame: the partial frame fails, the next one is fine.
-    let full = encode(&PING, 1);
-    let results = read_all(&[full[3..].to_vec(), full.clone()].concat());
-    assert_eq!(results.len(), 2);
-    assert!(results[0].is_err());
-    assert!(results[1].is_ok());
-}
-
-#[test]
-fn reader_reports_corruption_and_carries_on() {
-    let mut corrupted = encode(&PING, 0x1234);
-    corrupted[5] ^= 0x40; // a data byte, not a COBS code byte
-    let results = read_all(&[corrupted, encode(&PING, 1)].concat());
-    assert_eq!(results.len(), 2);
-    assert_eq!(results[0], Err(FrameError::BadCrc));
-    assert!(results[1].is_ok());
-}
-
-#[test]
-fn reader_rejects_overlong_frame_and_carries_on() {
-    let bytes = [vec![0x55; MAX_FRAME_LEN + 10], vec![0], encode(&PING, 1)].concat();
-    let results = read_all(&bytes);
-    assert_eq!(results.len(), 2);
-    assert_eq!(results[0], Err(FrameError::TooLong));
-    assert!(results[1].is_ok());
-}
-
-#[test]
-fn reader_overflows_only_past_the_largest_possible_frame() {
-    let longest = [vec![0x55; MAX_FRAME_LEN - 1], vec![0]].concat();
-    let too_long = [vec![0x55; MAX_FRAME_LEN], vec![0]].concat();
-    let results = read_all(&[longest, too_long, encode(&PING, 1)].concat());
-    assert_eq!(results.len(), 3);
-    assert!(
-        matches!(results[0], Err(e) if e != FrameError::TooLong),
-        "{:?}",
-        results[0]
-    );
-    assert_eq!(results[1], Err(FrameError::TooLong));
-    assert!(results[2].is_ok());
-}
-
-#[test]
-fn reader_rejects_frame_that_decodes_to_more_than_255_bytes() {
-    // Each 0x01 block stands for one zero: 257 of them decode to 256 zeros.
-    assert_eq!(
-        read_all(&[vec![0x01; MAX_FRAME_LEN - 1], vec![0]].concat()),
-        vec![Err(FrameError::TooLong)]
-    );
-}
-
-#[test]
-fn reader_handles_maximum_size_frames_back_to_back() {
-    let bytes = [
-        frame(0, 0xEE, 7, &[0; 249]),
-        frame(0, 0xEE, 8, &[1; 249]),
-        encode(&PING, 9),
-    ]
-    .concat();
-    let results = read_all(&bytes);
-    assert_eq!(results.len(), 3);
-    assert_eq!(results[..2], [Err(FrameError::UnknownType(0xEE)); 2]);
-    assert_eq!(results[2].map(|r| return r.sequence), Ok(9));
+    assert_eq!(Message::decode(&[0x05, 0x11, 0x22, 0x00]), Err(DecodeError::BadCobs));
 }

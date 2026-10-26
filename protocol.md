@@ -97,6 +97,7 @@ Constraint: the whole envelope is at most **255 bytes** (deliberate: fixed buffe
 The envelope is COBS-encoded (Consistent Overhead Byte Stuffing) so it contains no `0x00` bytes, then followed by a single `0x00` delimiter.
 
 - A receiver that loses sync just waits for the next `0x00`.
+- Transports that deliver whole packets (WiFi/UDP) send exactly one frame per packet, delimiter included, so every link carries the same bytes.
 - Message length is known from the delimiter position, so there is no length field.
 - Messages ≤ 254 bytes cost exactly 1 extra byte, plus the delimiter.
 
@@ -691,15 +692,15 @@ common/src/
     crc16.rs      (private)
     cobs.rs       (private)
     envelope.rs   (private) Flags / Type / Sequence / (Auth Tag) / CRC
-    frame.rs      FrameReader: received bytes → messages (Push, Received, FrameError, MAX_FRAME_LEN)
-    message.rs    enum Message { Hello(..), Sticks(..), Flip(..), ... } + Message::encode_frame
+    splitter.rs   FrameSplitter: byte stream → frames (cut at 0x00)
+    message.rs    enum Message { Hello(..), Sticks(..), Flip(..), ... } + encode / decode, Received, DecodeError
     codes.rs      MessageType, Status, ReasonCode, EventCode, StreamId, GroupId
-  protocol.rs  CRC-8, CRSF frame parsing, CRSF channels → Sticks
+  crsf.rs      CRC-8, CRSF frame parsing, CRSF channels → Sticks
 ```
 
-- The **internal state** types the adapters produce (sticks, pending command, settings changes, link health). They are protocol-neutral: CRSF units (172–1811) only exist inside the CRSF code (`protocol.rs`), which converts them.
+- The **internal state** types the adapters produce (sticks, pending command, settings changes, link health). They are protocol-neutral: CRSF units (172–1811) only exist inside `crsf.rs`, which converts them.
 - A Rust type for every message in §5 with encode/decode. Messages are shaped like the wire; where a message *is* a domain concept (Sticks), it holds the domain type instead of a copy of it.
-- Envelope encode/decode, COBS, CRC-16, fixed 255-byte buffers. These are private: callers only see `Message::encode_frame` (message + sequence number → bytes) and `FrameReader` (bytes → sequence number + message, or the reason it was dropped). The sequence counter itself belongs to the caller.
+- Envelope encode/decode, COBS, CRC-16, fixed 255-byte buffers. These are private: callers only see `Message::encode` (message + sequence number → frame bytes), `Message::decode` (frame bytes → sequence number + message, or the reason it was dropped) and, on stream transports, `FrameSplitter` (byte stream → frames). The sequence counter itself belongs to the caller.
 - Settings group and stream layouts; reason and event codes.
 - Tests: round-trip every message; corrupted/truncated frames are rejected; COBS edge cases (zeros, 254-byte runs, max size).
 

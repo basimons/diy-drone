@@ -4,10 +4,6 @@
 #[cfg(feature = "std")]
 extern crate std;
 
+pub mod crsf;
 pub mod domain;
-pub mod protocol;
 pub mod wire;
-
-pub fn hello() -> &'static str {
-    return "hello from drone-common";
-}

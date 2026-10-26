@@ -21,7 +21,7 @@ Install Rust with [rustup](https://rustup.rs), then from this folder:
 cargo build                  # build everything
 cargo test                   # run the tests
 cargo run -p drone-client    # run the ground client
-cargo run -p drone-fc        # run the flight code (on the laptop it only prints a hello)
+cargo run -p drone-fc        # run the flight code (on the laptop it only prints some startup info)
 scripts/check.sh             # formatting, lints and tests: the same checks CI runs
 ```
 
