@@ -243,9 +243,19 @@ wire_enum!(
         LinkRestored = 0x0202,
         BatteryLow = 0x0301,
         BatteryCritical = 0x0302,
-        FailsafeTriggered = 0x0401, // an automatic safety action took over
-        LoopOverrun = 0x0402,       // the flight loop missed its deadline
+        FailsafeTriggered = 0x0401,
+        LoopOverrun = 0x0402,
         ImuError = 0x0403,
+    }
+);
+
+wire_enum!(
+    /// Why a failsafe took over (drone-design.md §4). 0 is never used.
+    FailsafeCause: u8 {
+        LinkLoss = 1,
+        ClientFrozen = 2, // the client's Sticks stopped changing
+        LowBattery = 3,
+        LoopOverrun = 4,
     }
 );
 

@@ -224,3 +224,12 @@ fn unknown_never_holds_a_known_value() {
     assert_eq!(Unknown::<Status>::new(1), None);
     assert_eq!(format!("{:?}", Unknown::<Status>::new(9).unwrap()), "Unknown(9)");
 }
+
+#[test]
+fn failsafe_causes() {
+    use FailsafeCause::*;
+    check(
+        &[(LinkLoss, 1), (ClientFrozen, 2), (LowBattery, 3), (LoopOverrun, 4)],
+        Unknown,
+    );
+}

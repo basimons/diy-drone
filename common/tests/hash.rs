@@ -1,8 +1,10 @@
 //! Every public value type can be a `HashMap`/`HashSet` key, e.g. for the client to track what it sent.
 use drone_common::domain::*;
 use drone_common::wire::codes::*;
+use drone_common::wire::event::*;
 use drone_common::wire::message::*;
 use drone_common::wire::packet::{Packet, PacketError};
+use drone_common::wire::reply::*;
 use std::hash::Hash;
 
 /// Only compiles if `T` is a valid key; the name makes failures readable.
@@ -23,6 +25,12 @@ fn public_types_are_hashable() {
         key_type::<RequestId>(),
         key_type::<Reply>(),
         key_type::<Event>(),
+        key_type::<Armed>(),
+        key_type::<BatteryLow>(),
+        key_type::<Text>(),
+        key_type::<UnknownEvent>(),
+        key_type::<EventData>(),
+        key_type::<FailsafeCause>(),
         key_type::<EventText>(),
         key_type::<MessageError>(),
         key_type::<PacketError>(),

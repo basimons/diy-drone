@@ -52,7 +52,9 @@ while let Some(result) = decoder.next_packet(&mut chunk) {
 
 | Module | Public items | What it is |
 |--------|--------------|------------|
-| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Reply`, `Event`, …), `CommandRequest`, `RequestId`, `Answer`, `Failure`, `EventText`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode` |
+| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Pong`, …), `CommandRequest`, `RequestId`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode` |
+| `wire::reply` | `Reply`, `Answer`, `Failure` | The drone's answer to a request, typed per request: only combinations the protocol allows can be built |
+| `wire::event` | `Event`, one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `Text`, `UnknownEvent`, `EventKind` | What the drone reports on its own; each event holds only its own data |
 | `wire::packet` | `Packet`, `PacketError`, `MAX_PACKET_LEN` | A checked packet: `parse`, `sequence`, `as_bytes` |
 | `wire::stream` | `encode`, `StreamDecoder`, `MAX_FRAME_LEN` | COBS framing; only needed on byte streams |
 | `wire::codes` | `MessageType`, `Status`, `ArmRefusal` (one refusal enum per request), `EventCode`, `Unknown<E>`, … | The numeric codes used inside messages; values a code doesn't know are kept as `Unknown` |

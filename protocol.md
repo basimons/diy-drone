@@ -418,13 +418,13 @@ Rules:
 - Any other combination is invalid: OK to a request whose success is a data message, OK or busy with a Reason, refused without one, refused for a request that is never refused, an Answers Type that is not a request (e.g. Sticks).
 - A Status or Reason the receiver doesn't know (from a newer peer) is **kept, not rejected**: the receiver decides what to do with it, e.g. log it.
 
-**Event** (`0x41`, D→C, never an answer, so no Request ID):
+**Event** (`0x41`, D→C, never an answer, so no Request ID): the drone tells the client something happened.
 
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|     Level     |              Code             | Text (var.)   :
+|     Level     |              Code             | Data (var.)   :
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+               +
 :                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -432,25 +432,64 @@ Rules:
 
 where:
 
-- **Level (L):** 1 byte. One of: 0 = debug, 1 = info, 2 = warning, 3 = error.
-- **Code (C):** 2 bytes, u16. Machine-readable event code from the table below. 0 = none. A code the receiver doesn't know is kept, so the Event and its Text still arrive.
-- **Text:** variable length, UTF-8, the rest of the payload (up to 246 bytes). Where "any string from the drone" goes.
+- **Level (L):** 1 byte. One of: 0 = debug, 1 = info, 2 = warning, 3 = error. Fixed per Code (table below); only a Text event chooses its own.
+- **Code (C):** 2 bytes, u16. What happened, from the table below. 0 = Text.
+- **Data:** the rest of the payload (up to 246 bytes), layout per Code. Most events have none.
 
-Event codes (the high byte groups them):
+Events (the high byte of the Code groups them):
 
-| Code | Event |
-|------|-------|
-| `0x0101` | Armed |
-| `0x0102` | Disarmed |
-| `0x0201` | Link lost |
-| `0x0202` | Link restored |
-| `0x0301` | Battery low |
-| `0x0302` | Battery critical |
-| `0x0401` | Failsafe triggered (an automatic safety action took over) |
-| `0x0402` | Loop overrun (the flight loop missed its deadline) |
-| `0x0403` | IMU error |
+| Code | Event | Level | Data |
+|------|-------|-------|------|
+| `0x0000` | Text | any | Text: 1 … 246 bytes of UTF-8. Where "any string from the drone" goes. |
+| `0x0101` | Armed | info | none |
+| `0x0102` | Disarmed | info | none |
+| `0x0201` | Link lost | warning | none |
+| `0x0202` | Link restored | info | none |
+| `0x0301` | Battery low | warning | Millivolts: u16, whole pack |
+| `0x0302` | Battery critical | error | Millivolts: u16, whole pack |
+| `0x0401` | Failsafe triggered (an automatic safety action took over) | error | Cause: u8 (0 is never used). 1 = link loss, 2 = client frozen (its Sticks stopped changing), 3 = low battery, 4 = loop overrun |
+| `0x0402` | Loop overrun (the flight loop missed its deadline) | error | Late: u32, µs |
+| `0x0403` | IMU error | error | none |
 
-New codes are added to these tables and to `drone-common` together. Unknown codes (from a newer peer) are kept for the receiver to handle, never silently dropped, so a mismatch shows up in the logs.
+Battery low / Battery critical:
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|     Level     |              Code             |   Millivolts  :
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+:    (cont.)    |
++-+-+-+-+-+-+-+-+
+```
+
+Failsafe triggered:
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|     Level     |              Code             |     Cause     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+Loop overrun:
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|     Level     |              Code             |      Late     :
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+:                    (cont.)                    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+Rules:
+
+- A known Code with a different Level, or with Data that doesn't match its layout, makes the Event invalid.
+- A Text event with no text is invalid.
+- A Code the receiver doesn't know (from a newer peer) is **kept, not rejected**, with its Level and its Data as raw bytes, so the receiver can e.g. log it. An unknown Level is only kept for Text and for unknown Codes; an unknown Cause is kept as a Cause. New events are added to this table and to `drone-common` together.
 
 ### 5.5 Settings
 
@@ -752,7 +791,10 @@ common/src/
     cobs.rs       (private)
     packet.rs     Packet: checked Flags / Type / Sequence / Payload / (Auth Tag) / CRC; PacketError
     stream.rs     COBS framing for byte streams: stream::encode, StreamDecoder
-    message.rs    enum Message { Hello(..), Sticks(..), Command(..), Reply(..), ... } + encode / decode; MessageError
+    message.rs    enum Message { Hello(..), Sticks(..), Command(..), Reply(..), Event(..), ... } + encode / decode; MessageError
+    reply.rs      Reply { request_id, answer: Answer }: typed per request; Failure
+    event.rs      Event: one struct per event (Armed, BatteryLow { millivolts }, ...), Text, UnknownEvent
+    payload.rs    (private) reading and writing payload fields
     codes.rs      MessageType, Status, per-request refusal codes, EventCode, StreamId, GroupId; Unknown<E>
   crsf.rs      CRC-8, CRSF frame parsing, CRSF channels → Sticks
 ```

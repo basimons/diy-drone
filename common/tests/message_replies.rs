@@ -3,7 +3,8 @@ mod support;
 use core::convert::Infallible;
 use core::num::NonZeroU16;
 use drone_common::wire::codes::*;
-use drone_common::wire::message::{Answer, Failure, Message, MessageError, Reply, RequestId};
+use drone_common::wire::message::{Message, MessageError, RequestId};
+use drone_common::wire::reply::{Answer, Failure, Reply};
 use support::*;
 
 const REPLY: u8 = 0x40;

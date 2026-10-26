@@ -1,103 +1,187 @@
 mod support;
 
-use drone_common::wire::codes::{EventCode, EventLevel, Unknown};
-use drone_common::wire::message::{Event, EventText, MAX_EVENT_TEXT_LEN, Message, MessageError};
+use core::num::NonZeroU16;
+use drone_common::wire::codes::{EventCode, EventLevel, FailsafeCause, Unknown};
+use drone_common::wire::event::*;
+use drone_common::wire::message::{Message, MessageError};
 use support::*;
 
 const EVENT: u8 = 0x41;
 
-fn event(level: EventLevel, code: Option<EventCode>, text: &str) -> Message {
-    return Message::Event(Event {
-        level,
-        code,
+fn check(event: Event, payload: &[u8]) {
+    check_round_trip(Message::Event(event), EVENT, payload);
+}
+
+#[test]
+fn events_without_data() {
+    check(Event::Armed(Armed), &[1, 0x01, 0x01]);
+    check(Event::Disarmed(Disarmed), &[1, 0x02, 0x01]);
+    check(Event::LinkLost(LinkLost), &[2, 0x01, 0x02]);
+    check(Event::LinkRestored(LinkRestored), &[1, 0x02, 0x02]);
+    check(Event::ImuError(ImuError), &[3, 0x03, 0x04]);
+}
+
+#[test]
+fn events_with_data() {
+    check(
+        Event::BatteryLow(BatteryLow { millivolts: 14_000 }),
+        &[2, 0x01, 0x03, 0xB0, 0x36],
+    );
+    check(
+        Event::BatteryCritical(BatteryCritical { millivolts: 13_200 }),
+        &[3, 0x02, 0x03, 0x90, 0x33],
+    );
+    check(
+        Event::FailsafeTriggered(FailsafeTriggered {
+            cause: FailsafeCause::ClientFrozen,
+        }),
+        &[3, 0x01, 0x04, 2],
+    );
+    check(
+        Event::LoopOverrun(LoopOverrun { late_us: 0x0001_0203 }),
+        &[3, 0x02, 0x04, 0x03, 0x02, 0x01, 0x00],
+    );
+}
+
+#[test]
+fn each_event_kind_has_a_fixed_code_and_level() {
+    assert_eq!((Armed::CODE, Armed::LEVEL), (EventCode::Armed, EventLevel::Info));
+    assert_eq!(
+        (BatteryLow::CODE, BatteryLow::LEVEL),
+        (EventCode::BatteryLow, EventLevel::Warning)
+    );
+    let event = Event::BatteryCritical(BatteryCritical { millivolts: 1 });
+    assert_eq!(
+        (event.code(), event.level()),
+        (Some(EventCode::BatteryCritical), EventLevel::Error)
+    );
+}
+
+#[test]
+fn text() {
+    let text = "batterie faible: 3,4 V ⚡";
+    let event = Event::Text(Text {
+        level: EventLevel::Debug,
         text: EventText::new(text).unwrap(),
     });
+    assert_eq!((event.code(), event.level()), (None, EventLevel::Debug));
+    check(event, &[[0, 0, 0].as_slice(), text.as_bytes()].concat());
 }
 
 #[test]
-fn event_every_level() {
-    let levels = [
-        (EventLevel::Debug, 0),
-        (EventLevel::Info, 1),
-        (EventLevel::Warning, 2),
-        (EventLevel::Error, 3),
-    ];
-    for (level, byte) in levels {
-        let message = event(level, Some(EventCode::BatteryCritical), "hi");
-        check_round_trip(message, EVENT, &[byte, 0x02, 0x03, b'h', b'i']);
-    }
-}
-
-#[test]
-fn event_without_text() {
-    check_round_trip(event(EventLevel::Info, None, ""), EVENT, &[1, 0, 0]);
-}
-
-#[test]
-fn event_text_is_utf8() {
-    let text = "batterie faible: 3,4 V ⚡";
-    let payload = [&[2, 0x01, 0x03][..], text.as_bytes()].concat();
-    check_round_trip(
-        event(EventLevel::Warning, Some(EventCode::BatteryLow), text),
-        EVENT,
-        &payload,
-    );
-    let Ok(Message::Event(decoded)) = decode_payload(EVENT, &payload) else {
-        panic!("not an event");
-    };
-    assert_eq!(decoded.text.as_str(), text);
-}
-
-#[test]
-fn event_text_up_to_246_bytes() {
+fn text_is_never_empty_and_at_most_246_bytes() {
     // 249 bytes of payload, minus Level and Code.
-    assert_eq!(MAX_EVENT_TEXT_LEN, 246);
-    let longest = "x".repeat(MAX_EVENT_TEXT_LEN);
-    let payload = [&[1, 0, 0][..], longest.as_bytes()].concat();
-    check_round_trip(event(EventLevel::Info, None, &longest), EVENT, &payload);
-    assert_eq!(EventText::new(&"x".repeat(MAX_EVENT_TEXT_LEN + 1)), None);
+    assert_eq!(MAX_EVENT_DATA_LEN, 246);
+    let longest = "x".repeat(MAX_EVENT_DATA_LEN);
+    let event = Event::Text(Text {
+        level: EventLevel::Info,
+        text: EventText::new(&longest).unwrap(),
+    });
+    check(event, &[[1, 0, 0].as_slice(), longest.as_bytes()].concat());
+    assert_eq!(EventText::new(&"x".repeat(MAX_EVENT_DATA_LEN + 1)), None);
+    assert_eq!(EventText::new(""), None);
 }
 
 #[test]
 fn event_texts_compare_and_print_as_text() {
     assert_eq!(EventText::new("abc"), EventText::new("abc"));
     assert_ne!(EventText::new("abc"), EventText::new("abd"));
-    assert_eq!(EventText::default().as_str(), "");
     assert_eq!(format!("{:?}", EventText::new("abc").unwrap()), "\"abc\"");
 }
 
 #[test]
-fn event_keeps_unknown_level_and_code() {
-    // A newer drone may send codes this client doesn't know; the text still arrives and the caller decides.
-    let payload = [&[9, 0x99, 0x09][..], b"new"].concat();
-    let message = Message::Event(Event {
+fn text_keeps_an_unknown_level() {
+    let event = Event::Text(Text {
         level: EventLevel::Unknown(Unknown::new(9).unwrap()),
-        code: Some(EventCode::Unknown(
-            Unknown::new(core::num::NonZeroU16::new(0x0999).unwrap()).unwrap(),
-        )),
         text: EventText::new("new").unwrap(),
     });
-    check_round_trip(message, EVENT, &payload);
+    check(event, &[9, 0, 0, b'n', b'e', b'w']);
 }
 
 #[test]
-fn event_rejects_bad_text() {
-    let cases: [(&str, Vec<u8>); 2] = [
-        ("invalid UTF-8", vec![1, 0, 0, 0xFF]),
-        ("cut-off UTF-8 character", vec![1, 0, 0, 0xE2, 0x9A]),
+fn unknown_event_keeps_its_level_code_and_data() {
+    // A newer drone may send events this client doesn't know; the caller decides, e.g. logs them.
+    let event = Event::Unknown(UnknownEvent {
+        level: EventLevel::Warning,
+        code: Unknown::new(NonZeroU16::new(0x0999).unwrap()).unwrap(),
+        data: EventData::new(&[1, 2, 3]).unwrap(),
+    });
+    check(event, &[2, 0x99, 0x09, 1, 2, 3]);
+    let empty = Event::Unknown(UnknownEvent {
+        level: EventLevel::Info,
+        code: Unknown::new(NonZeroU16::new(0x0999).unwrap()).unwrap(),
+        data: EventData::new(&[]).unwrap(),
+    });
+    check(empty, &[1, 0x99, 0x09]);
+    let largest = Event::Unknown(UnknownEvent {
+        level: EventLevel::Info,
+        code: Unknown::new(NonZeroU16::new(0x0999).unwrap()).unwrap(),
+        data: EventData::new(&[7; MAX_EVENT_DATA_LEN]).unwrap(),
+    });
+    check(
+        largest,
+        &[[1, 0x99, 0x09].as_slice(), &[7; MAX_EVENT_DATA_LEN]].concat(),
+    );
+    assert_eq!(EventData::new(&[0; MAX_EVENT_DATA_LEN + 1]), None);
+}
+
+#[test]
+fn failsafe_keeps_an_unknown_cause() {
+    let event = Event::FailsafeTriggered(FailsafeTriggered {
+        cause: FailsafeCause::Unknown(Unknown::new(0xEE).unwrap()),
+    });
+    check(event, &[3, 0x01, 0x04, 0xEE]);
+}
+
+#[test]
+fn rejects_known_events_that_dont_fit() {
+    use MessageError::{InvalidValue, WrongLength};
+    let cases: [(&str, Vec<u8>, MessageError); 12] = [
+        ("Armed with level Error", vec![3, 0x01, 0x01], InvalidValue),
+        ("Armed with an unknown level", vec![9, 0x01, 0x01], InvalidValue),
+        ("Armed with data", vec![1, 0x01, 0x01, 0], WrongLength),
+        ("BatteryLow without its voltage", vec![2, 0x01, 0x03], WrongLength),
+        ("BatteryLow with half its voltage", vec![2, 0x01, 0x03, 0], WrongLength),
+        (
+            "BatteryLow with too much data",
+            vec![2, 0x01, 0x03, 0, 0, 0],
+            WrongLength,
+        ),
+        ("FailsafeTriggered without a cause", vec![3, 0x01, 0x04], WrongLength),
+        (
+            "FailsafeTriggered with too much data",
+            vec![3, 0x01, 0x04, 1, 0],
+            WrongLength,
+        ),
+        ("LoopOverrun with 2 of 4 bytes", vec![3, 0x02, 0x04, 0, 0], WrongLength),
+        ("Text without text", vec![1, 0, 0], InvalidValue),
+        ("invalid UTF-8 text", vec![1, 0, 0, 0xFF], InvalidValue),
+        ("cut-off UTF-8 character", vec![1, 0, 0, 0xE2, 0x9A], InvalidValue),
     ];
-    for (case, payload) in cases {
-        assert_eq!(
-            decode_payload(EVENT, &payload),
-            Err(MessageError::InvalidValue),
-            "{case}"
-        );
+    for (case, payload, error) in cases {
+        assert_eq!(decode_payload(EVENT, &payload), Err(error), "{case}");
     }
 }
 
 #[test]
-fn event_rejects_too_short() {
+fn rejects_too_short() {
     for length in 0..3 {
         assert_eq!(decode_payload(EVENT, &vec![1; length]), Err(MessageError::WrongLength));
+    }
+}
+
+#[test]
+fn every_event_header_decodes_or_is_invalid() {
+    // Every Level × Code with a few data lengths: decoding never panics, and anything accepted encodes back.
+    for level in 0..=255u8 {
+        let around_codes = (0..=4u16).flat_map(|group| return (0..=5).map(move |n| return group << 8 | n));
+        for code in around_codes.chain([0x0999, u16::MAX]) {
+            for data in [&[][..], &[1][..], &[1, 2][..], &[1, 2, 3, 4][..]] {
+                let payload = [&[level][..], &code.to_le_bytes(), data].concat();
+                if let Ok(message) = decode_payload(EVENT, &payload) {
+                    assert_eq!(encode_packet(&message, 0), packet(0, EVENT, 0, &payload));
+                }
+            }
+        }
     }
 }
