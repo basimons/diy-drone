@@ -43,6 +43,12 @@ pub fn encode(input: &[u8], output: &mut [u8]) -> Result<usize, CobsError> {
         }
     }
     output[code_at] = code;
+    debug_assert!(
+        written <= max_encoded_len(input.len()),
+        "{written} bytes for {} input",
+        input.len()
+    );
+    debug_assert!(!output[..written].contains(&0), "COBS output contains 0x00");
     return Ok(written);
 }
 
@@ -65,11 +71,17 @@ pub fn decode(input: &[u8], output: &mut [u8]) -> Result<usize, CobsError> {
             put(output, &mut written, byte)?;
         }
         read = block_end;
+        debug_assert!(read <= input.len());
         // Every block except a full one (0xFF) and the last one stood for a zero.
         if code != 0xFF && read < input.len() {
             put(output, &mut written, 0)?;
         }
     }
+    debug_assert!(
+        written < input.len() || input.is_empty(),
+        "decoded {written} from {} bytes",
+        input.len()
+    );
     return Ok(written);
 }
 

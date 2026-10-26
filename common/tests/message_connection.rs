@@ -1,6 +1,5 @@
 mod support;
 
-use drone_common::wire::codes::HelloResult;
 use drone_common::wire::message::*;
 use drone_common::wire::packet::Packet;
 use support::*;
@@ -25,7 +24,7 @@ fn decode(message_type: u8, payload: &[u8]) -> Result<Message, MessageError> {
 fn check(message: Message, message_type: u8, payload: &[u8]) {
     let handshake = message_type == HELLO || message_type == HELLO_REPLY;
     let sequence = if handshake { 0 } else { 42 };
-    let encoded = encode_packet(&message, 42);
+    let encoded = encode_packet(&message, sequence);
     assert_eq!(encoded, packet(0, message_type, sequence, payload));
     assert_eq!(Message::decode(&Packet::parse(&encoded).unwrap()), Ok(message));
 }
@@ -36,7 +35,7 @@ fn hello() {
         protocol_version: 7,
         options: Options {
             authentication: true,
-            unknown: 0,
+            unknown: UnknownOptions::default(),
         },
     });
     check(hello, HELLO, &[0x07, 0x01, 0x00, 0x00, 0x00]);
@@ -49,8 +48,9 @@ fn hello_keeps_unknown_option_bits() {
     let decoded = decode(HELLO, &payload).unwrap();
     let options = Options {
         authentication: true,
-        unknown: 0x8000_0020,
+        unknown: UnknownOptions::new(0x8000_0020).unwrap(),
     };
+    assert_eq!(options.unknown.bits(), 0x8000_0020);
     assert_eq!(
         decoded,
         Message::Hello(Hello {
@@ -59,6 +59,19 @@ fn hello_keeps_unknown_option_bits() {
         })
     );
     assert_eq!(encode_packet(&decoded, 0), packet(0, HELLO, 0, &payload));
+}
+
+#[test]
+fn unknown_options_never_hold_a_known_bit() {
+    // Otherwise encoding would drop the bit, and the message wouldn't decode back the same.
+    assert_eq!(UnknownOptions::new(0x0000_0001), None); // authentication
+    assert_eq!(UnknownOptions::new(0xFFFF_FFFF), None);
+    assert_eq!(UnknownOptions::new(0).map(|o| return o.bits()), Some(0));
+    assert_eq!(
+        UnknownOptions::new(0xFFFF_FFFE).map(|o| return o.bits()),
+        Some(0xFFFF_FFFE)
+    );
+    assert_eq!(UnknownOptions::default().bits(), 0);
 }
 
 #[test]
@@ -85,14 +98,10 @@ fn hello_with_other_version_still_decodes() {
 }
 
 #[test]
-fn hello_and_hello_reply_always_use_sequence_0() {
-    // protocol.md §5.1: they carry Sequence 0, whatever the sender's counter says.
-    let hello = Message::Hello(Hello {
-        protocol_version: 1,
-        options: Options::default(),
-    });
-    assert_eq!(Packet::parse(&encode_packet(&hello, 9)).unwrap().sequence(), 0);
+fn hello_and_hello_reply_only_decode_with_sequence_0() {
+    // protocol.md §5.1: they are message 0 of a session.
     for (message_type, payload) in [(HELLO, vec![1, 0, 0, 0, 0]), (HELLO_REPLY, vec![1, 0, 0, 0, 0, 0])] {
+        assert!(decode_with_sequence(message_type, 0, &payload).is_ok());
         let decoded = decode_with_sequence(message_type, 7, &payload);
         assert_eq!(
             decoded,
@@ -100,6 +109,30 @@ fn hello_and_hello_reply_always_use_sequence_0() {
             "type {message_type} with sequence 7"
         );
     }
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "message 0 of a session")]
+fn encoding_hello_with_another_sequence_is_a_bug() {
+    // The caller resets its counter at the handshake (protocol.md §6), so anything else is a bug in the caller.
+    let hello = Message::Hello(Hello {
+        protocol_version: 1,
+        options: Options::default(),
+    });
+    encode_packet(&hello, 9);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "message 0 of a session")]
+fn encoding_hello_reply_with_another_sequence_is_a_bug() {
+    let reply = Message::HelloReply(HelloReply {
+        protocol_version: 1,
+        result: HelloResult::Ok,
+        options: Options::default(),
+    });
+    encode_packet(&reply, 9);
 }
 
 #[test]
@@ -120,10 +153,13 @@ fn hello_reply_every_result() {
 
 #[test]
 fn hello_reply_rejects_unknown_result() {
-    for byte in [3, 0xFF] {
-        let decoded = decode(HELLO_REPLY, &[1, byte, 0, 0, 0, 0]);
-        assert_eq!(decoded, Err(MessageError::InvalidValue), "result {byte}");
-    }
+    // HelloReply's results never change between protocol versions (protocol.md §5.1).
+    let decoded = decode(HELLO_REPLY, &[1, 0xFF, 0, 0, 0, 0]);
+    let unknown = MessageError::UnknownCode {
+        kind: "HelloResult",
+        value: 0xFF,
+    };
+    assert_eq!(decoded, Err(unknown));
 }
 
 #[test]
@@ -163,5 +199,12 @@ fn rejects_wrong_payload_length() {
 #[test]
 fn unknown_type_is_reported_with_its_byte() {
     // The drone answers with Reply "unknown type", so it must see the byte.
-    assert_eq!(decode(0xEE, &[]), Err(MessageError::UnknownType(0xEE)));
+    let unknown = UnknownType::new(0xEE).unwrap();
+    assert_eq!(decode(0xEE, &[]), Err(MessageError::UnknownType(unknown)));
+}
+
+#[test]
+fn type_without_a_rust_message_yet_is_unknown_to_this_build() {
+    let link_test = UnknownType::new(0x05).unwrap();
+    assert_eq!(decode(0x05, &[]), Err(MessageError::UnknownType(link_test)));
 }

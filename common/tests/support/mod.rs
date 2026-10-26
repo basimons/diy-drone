@@ -2,7 +2,8 @@
 #![allow(dead_code)] // each test file uses a different subset
 
 use drone_common::wire::message::Message;
-use drone_common::wire::packet::{MAX_PACKET_LEN, PacketError};
+use drone_common::wire::message::MessageError;
+use drone_common::wire::packet::{MAX_PACKET_LEN, Packet, PacketError};
 use drone_common::wire::stream::{self, MAX_FRAME_LEN, StreamDecoder};
 
 /// CRC-16/CCITT-FALSE, written out bit by bit.
@@ -91,4 +92,41 @@ pub fn read_all(bytes: &[u8]) -> Vec<Result<(u16, Message), PacketError>> {
         results.push(packet.map(|p| return (p.sequence(), Message::decode(&p).expect("valid message"))));
     }
     return results;
+}
+
+/// Decodes a hand-built packet with sequence 0.
+pub fn decode_payload(message_type: u8, payload: &[u8]) -> Result<Message, MessageError> {
+    let bytes = packet(0, message_type, 0, payload);
+    return Message::decode(&Packet::parse(&bytes).unwrap());
+}
+
+/// Encodes `message` with sequence 42, checks it against a hand-built packet, and checks it decodes back.
+pub fn check_round_trip(message: Message, message_type: u8, payload: &[u8]) {
+    let encoded = encode_packet(&message, 42);
+    assert_eq!(encoded, packet(0, message_type, 42, payload), "{message:?}");
+    assert_eq!(decode_payload(message_type, payload), Ok(message));
+}
+
+/// `valid` decodes, but the same payload cut short or with bytes added is `WrongLength`.
+pub fn check_only_length(message_type: u8, valid: &[u8]) {
+    assert!(
+        decode_payload(message_type, valid).is_ok(),
+        "type {message_type:#04x}: {valid:?} should decode"
+    );
+    let longest = [valid, &[0; 249][valid.len()..]].concat();
+    for wrong in [0, valid.len().saturating_sub(1), valid.len() + 1, 249] {
+        if wrong == valid.len() {
+            continue;
+        }
+        let payload = if wrong < valid.len() {
+            &valid[..wrong]
+        } else {
+            &longest[..wrong]
+        };
+        assert_eq!(
+            decode_payload(message_type, payload),
+            Err(MessageError::WrongLength),
+            "type {message_type:#04x} with {wrong} bytes"
+        );
+    }
 }

@@ -20,43 +20,164 @@ Message  ⇄  Packet  ⇄  frame (byte streams only)
   `0x00` bytes are replaced by signposts, and one `0x00` ends the frame, so the receiver knows where each packet
   ends (protocol.md §4.2).
 
+Below, a client and a drone talk over a byte stream: anything with `Read + Write`, such as the serial port to the
+radio module or a TCP stream. Each message and event is a plain struct, and the types decide what can be said, so
+there are no status bytes or reason numbers to get wrong. Over UDP one datagram is one packet: skip
+`StreamDecoder` and `stream::encode`, read with `Packet::parse(&datagram)` and send `packet.as_bytes()`.
+
+### Both sides: sending
+
 ```rust
-use drone_common::wire::message::{Message, Ping};
-use drone_common::wire::packet::{MAX_PACKET_LEN, Packet};
-use drone_common::wire::stream::{self, MAX_FRAME_LEN, StreamDecoder};
+use drone_common::wire::message::Message;
+use drone_common::wire::packet::MAX_PACKET_LEN;
+use drone_common::wire::stream::{self, MAX_FRAME_LEN};
+use std::io::Write;
 
-// Illustrative: `socket`, `port`, `handle`, … are yours. Both error types implement `core::error::Error`,
-// so `?` works with e.g. anyhow.
-let ping = Message::Ping(Ping { timestamp: 1234 });
-let mut buf = [0u8; MAX_PACKET_LEN];
+pub const PROTOCOL_VERSION: u8 = 1;
 
-// UDP
-socket.send(ping.encode(sequence, &mut buf).as_bytes())?;
-let packet = Packet::parse(&datagram)?;            // PacketError: damaged, drop and count it
-let received = Message::decode(&packet)?;          // MessageError: intact but invalid, can be answered
+/// Sends one message as a frame. Every message sent counts up the sequence number (protocol.md §4.1).
+pub fn send(link: &mut impl Write, sequence: &mut u16, message: Message) -> std::io::Result<()> {
+    let mut packet = [0u8; MAX_PACKET_LEN];
+    let mut frame = [0u8; MAX_FRAME_LEN];
+    link.write_all(stream::encode(&message.encode(*sequence, &mut packet), &mut frame))?;
+    *sequence = sequence.wrapping_add(1);
+    return Ok(());
+}
+```
 
-// Byte stream (serial, radio): reads arrive in chunks of any size
-let mut frame = [0u8; MAX_FRAME_LEN];
-port.write_all(stream::encode(&ping.encode(sequence, &mut buf), &mut frame))?;
+### Client
 
-let mut decoder = StreamDecoder::new();
-let mut chunk = &read_buf[..n];
-while let Some(result) = decoder.next_packet(&mut chunk) {
-    let Ok(packet) = result else { continue };     // count the PacketError
-    match Message::decode(&packet) {
-        Ok(message) => handle(packet.sequence(), message),
-        Err(error) => answer(&packet, error),      // the packet is still there for the Reply
+Opens a session, asks for a flip, then handles whatever comes back.
+
+```rust
+use drone_common::wire::event::Event;
+use drone_common::wire::message::{Answer, Flip, Hello, HelloResult, Message, Options, RequestId};
+use drone_common::wire::reply::Reply;
+use drone_common::wire::stream::StreamDecoder;
+use std::error::Error;
+use std::io::{Read, Write};
+
+fn client(link: &mut (impl Read + Write)) -> Result<(), Box<dyn Error>> {
+    let mut sequence = 0; // Hello is message 0 of a session
+    let hello = Hello {
+        protocol_version: PROTOCOL_VERSION,
+        options: Options::default(),
+    };
+    send(link, &mut sequence, Message::Hello(hello))?;
+
+    // Requests count up their own Request ID; a resend after a timeout keeps it (protocol.md §5.0).
+    // A real client sends this after the HelloReply, with Sticks going out at 50 Hz all the time (§5.2).
+    let flip = Flip {
+        request_id: RequestId(1),
+        direction: 0xC000, // to the left
+        duration_ms: 300,
+    };
+    send(link, &mut sequence, Message::Flip(flip))?;
+
+    let mut decoder = StreamDecoder::new();
+    let mut read_buf = [0u8; 512];
+    loop {
+        let n = link.read(&mut read_buf)?;
+        let mut chunk = &read_buf[..n];
+        while let Some(packet) = decoder.next_packet(&mut chunk) {
+            let Ok(packet) = packet else { continue }; // damaged on the way: drop it, count it as lost
+            match Message::decode(&packet) {
+                Ok(Message::HelloReply(reply)) => match reply.result {
+                    HelloResult::Ok => println!("connected"),
+                    refused => return Err(format!("drone refused the session: {refused:?}").into()),
+                },
+                Ok(Message::Reply(Reply { request_id, answer: Answer::Flip(outcome) })) => {
+                    println!("flip {request_id:?}: {outcome:?}") // e.g. "flip RequestId(1): Refused(NotArmed)"
+                }
+                Ok(Message::Event(Event::Text(text))) => println!("{:?}: {}", text.level, text.text),
+                Ok(Message::Event(event)) => println!("{:?}: {event:?}", event.level()),
+                Ok(other) => println!("ignored {other:?}"),
+                Err(error) => println!("dropped an invalid message: {error}"), // only the drone answers these
+            }
+        }
     }
 }
 ```
 
+### Drone
+
+Answers every request: with its outcome, or with "malformed" / "unknown type" when it doesn't decode. Deciding
+*whether* to arm or flip is the flight code's job; the types only let it answer with reasons that request may have.
+Not shown: remembering the last 16 Request IDs, so a resent request is answered again without being executed twice
+(protocol.md §5.0).
+
+```rust
+use drone_common::wire::message::{ArmRefusal, HelloReply, HelloResult, Message, Options};
+use drone_common::wire::reply::{Outcome, Reply};
+use drone_common::wire::stream::StreamDecoder;
+use std::error::Error;
+use std::io::{Read, Write};
+
+/// `flight` is your flight code: it takes the sticks and decides each request, returning its Outcome.
+fn drone(link: &mut (impl Read + Write), flight: &mut Flight) -> Result<(), Box<dyn Error>> {
+    let mut sequence = 0;
+    let mut decoder = StreamDecoder::new();
+    let mut read_buf = [0u8; 512];
+    loop {
+        let n = link.read(&mut read_buf)?;
+        let mut chunk = &read_buf[..n];
+        while let Some(packet) = decoder.next_packet(&mut chunk) {
+            let Ok(packet) = packet else { continue }; // damaged on the way: drop it, count it as lost
+            let answer = match Message::decode(&packet) {
+                Ok(Message::Hello(hello)) => {
+                    sequence = 0; // a Hello starts a new session; the HelloReply is its message 0
+                    let result = if hello.protocol_version != PROTOCOL_VERSION {
+                        HelloResult::VersionMismatch
+                    } else if hello.options != Options::default() {
+                        HelloResult::OptionNotSupported // e.g. authentication, not built yet
+                    } else {
+                        HelloResult::Ok
+                    };
+                    Some(Message::HelloReply(HelloReply {
+                        protocol_version: PROTOCOL_VERSION,
+                        result,
+                        options: Options::default(),
+                    }))
+                }
+                Ok(Message::Sticks(sticks)) => {
+                    flight.set_sticks(sticks);
+                    None // Sticks are never answered
+                }
+                Ok(Message::Arm(arm)) => {
+                    let outcome = if flight.arm_switch_on() {
+                        flight.arm()
+                    } else {
+                        Outcome::Refused(ArmRefusal::ArmSwitchOff) // the transmitter has the last word
+                    };
+                    Some(Message::Reply(Reply::to(&arm, outcome)))
+                }
+                Ok(Message::Flip(flip)) => Some(Message::Reply(Reply::to(&flip, flight.flip(&flip)))),
+                Ok(other) => {
+                    println!("not handled yet: {other:?}");
+                    None
+                }
+                Err(_) => Reply::to_invalid(&packet).map(Message::Reply), // "malformed" / "unknown type"
+            };
+            if let Some(answer) = answer {
+                send(link, &mut sequence, answer)?;
+            }
+        }
+        // The drone also reports on its own, e.g. when the battery runs low:
+        // send(link, &mut sequence, Message::Event(Event::BatteryLow(BatteryLow { millivolts })))?;
+    }
+}
+```
+
+## Modules
+
 | Module | Public items | What it is |
 |--------|--------------|------------|
-| `wire::message` | `Message`, one struct per message (`Hello`, `HelloReply`, `Ping`, `Pong`, …), `MessageError` | The messages of protocol.md §5 and their `encode` / `decode` |
+| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Arm`, `Flip`, …), `HelloResult`, the refusal codes (`ArmRefusal`, …), `Request`, `RequestId`, `Answer`, `RequestType`, `UnknownType`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode`. Each message is defined once, in one list |
+| `wire::reply` | `Reply`, `Outcome`, `Reason` | The drone's answer to a request, typed per request: only combinations the protocol allows can be built. Every refusal enum (`FlipRefusal`, …) converts into the shared `Reason`, so the client can handle any refusal in one place. `Reply::to(&request, outcome)` takes the Request ID and type from the request; `Reply::to_invalid(&packet)` answers a packet that didn't decode |
+| `wire::event` | `Event`, one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `EventLevel`, `FailsafeCause`, `Text`, `EventText`, `EventKind` | What the drone reports on its own; each event holds only its own data. `EventText` is a string without heap: use it like a `&str`, build it with `EventText::format(format_args!(…))` |
 | `wire::packet` | `Packet`, `PacketError`, `MAX_PACKET_LEN` | A checked packet: `parse`, `sequence`, `as_bytes` |
 | `wire::stream` | `encode`, `StreamDecoder`, `MAX_FRAME_LEN` | COBS framing; only needed on byte streams |
-| `wire::codes` | `MessageType`, `HelloResult`, … | The numeric codes used inside messages |
-| `domain` | `RcChannels`, `ArmState`, … | Protocol-neutral state: what the sticks say, armed or not |
+| `domain` | `Sticks` (the Sticks message, re-exported), `ArmState`, `RcChannels` | Protocol-neutral state: what the sticks say, armed or not |
 | `crsf` | CRSF constants and CRC-8 | CRSF (Crossfire), the radio protocol between the ELRS receiver and the FC |
 
 The CRC-16 and COBS code itself is private.
