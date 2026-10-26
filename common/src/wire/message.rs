@@ -127,13 +127,20 @@ impl EventText {
         if text.len() > MAX_EVENT_TEXT_LEN {
             return None;
         }
-        return Some(Self {
+        let event_text = Self {
             bytes: core::array::from_fn(|i| return text.as_bytes().get(i).copied().unwrap_or(0)),
             len: text.len(),
-        });
+        };
+        debug_assert_eq!(event_text.as_str(), text);
+        return Some(event_text);
     }
 
     pub fn as_str(&self) -> &str {
+        debug_assert!(self.len <= MAX_EVENT_TEXT_LEN, "length {}", self.len);
+        debug_assert!(
+            self.bytes[self.len..].iter().all(|&b| return b == 0),
+            "PartialEq needs zero padding"
+        );
         return core::str::from_utf8(&self.bytes[..self.len]).expect("only built from a str");
     }
 }
@@ -192,6 +199,25 @@ impl Message {
     /// Writes the packet into `out`. Hello and HelloReply always get Sequence 0 (protocol.md §5.1), whatever
     /// `sequence` is.
     pub fn encode<'a>(&self, sequence: u16, out: &'a mut [u8; MAX_PACKET_LEN]) -> Packet<'a> {
+        let packet = self.write(sequence, out);
+        debug_assert_eq!(Self::read(&packet), Ok(*self), "encoding doesn't decode back");
+        return packet;
+    }
+
+    pub fn decode(packet: &Packet) -> Result<Self, MessageError> {
+        let message = Self::read(packet);
+        if let Ok(decoded) = message {
+            debug_assert_eq!(
+                decoded.write(packet.sequence(), &mut [0; MAX_PACKET_LEN]).as_bytes(),
+                packet.as_bytes(),
+                "{decoded:?} doesn't encode back to the bytes it came from"
+            );
+        }
+        return message;
+    }
+
+    /// `encode` without its debug check, so the checks of `encode` and `decode` don't call each other.
+    fn write<'a>(&self, sequence: u16, out: &'a mut [u8; MAX_PACKET_LEN]) -> Packet<'a> {
         let mut w = Writer::new();
         match self {
             Message::Hello(m) => {
@@ -238,7 +264,7 @@ impl Message {
         return Packet::write(self.message_type(), sequence, w.written(), out);
     }
 
-    pub fn decode(packet: &Packet) -> Result<Self, MessageError> {
+    fn read(packet: &Packet) -> Result<Self, MessageError> {
         if is_handshake(packet.message_type()) && packet.sequence() != 0 {
             return Err(MessageError::InvalidValue);
         }
@@ -371,6 +397,12 @@ impl Writer {
     }
 
     fn put(&mut self, bytes: &[u8]) {
+        debug_assert!(
+            self.len + bytes.len() <= MAX_PAYLOAD_LEN,
+            "{} + {} bytes",
+            self.len,
+            bytes.len()
+        );
         self.bytes[self.len..self.len + bytes.len()].copy_from_slice(bytes);
         self.len += bytes.len();
     }

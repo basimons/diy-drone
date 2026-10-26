@@ -57,7 +57,9 @@ impl<'a> Packet<'a> {
         if body[0] != 0 {
             return Err(PacketError::UnsupportedFlags);
         }
-        return Ok(Self { bytes });
+        let packet = Self { bytes };
+        debug_assert!(packet.payload().len() <= MAX_PAYLOAD_LEN);
+        return Ok(packet);
     }
 
     /// Writes a packet into `out`. Our own message encoder is the only caller.
@@ -77,9 +79,9 @@ impl<'a> Packet<'a> {
         out[HEADER_LEN..crc_at].copy_from_slice(payload);
         let crc = crc16(&out[..crc_at]);
         out[crc_at..crc_at + CRC_LEN].copy_from_slice(&crc.to_le_bytes());
-        return Self {
-            bytes: &out[..crc_at + CRC_LEN],
-        };
+        let bytes = &out[..crc_at + CRC_LEN];
+        debug_assert_eq!(Packet::parse(bytes), Ok(Self { bytes }), "written packet doesn't parse");
+        return Self { bytes };
     }
 
     pub fn sequence(&self) -> u16 {

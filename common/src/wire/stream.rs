@@ -11,7 +11,20 @@ pub const MAX_FRAME_LEN: usize = cobs::max_encoded_len(MAX_PACKET_LEN) + 1;
 pub fn encode<'a>(packet: &Packet, out: &'a mut [u8; MAX_FRAME_LEN]) -> &'a [u8] {
     let len = cobs::encode(packet.as_bytes(), &mut out[..MAX_FRAME_LEN - 1]).expect("MAX_FRAME_LEN fits any packet");
     out[len] = 0;
-    return &out[..len + 1];
+    let frame = &out[..len + 1];
+    debug_assert_eq!(
+        frame.iter().position(|&b| return b == 0),
+        Some(len),
+        "0x00 inside the frame"
+    );
+    debug_assert!(
+        {
+            let mut decoded = [0; MAX_PACKET_LEN];
+            cobs::decode(&frame[..len], &mut decoded).map(|n| return &decoded[..n]) == Ok(packet.as_bytes())
+        },
+        "frame doesn't decode back to its packet"
+    );
+    return frame;
 }
 
 /// Cuts a received byte stream into frames at the `0x00` delimiters and turns each back into a packet.
@@ -63,6 +76,11 @@ impl StreamDecoder {
             self.frame[self.len..self.len + bytes.len()].copy_from_slice(bytes);
             self.len += bytes.len();
         }
+        debug_assert!(self.len <= self.frame.len(), "{} bytes stored", self.len);
+        debug_assert!(
+            self.overflowed || !self.frame[..self.len].contains(&0),
+            "0x00 is the delimiter"
+        );
     }
 
     fn decode(&mut self, len: usize) -> Result<Packet<'_>, PacketError> {
@@ -72,6 +90,7 @@ impl StreamDecoder {
                 CobsError::ZeroByte | CobsError::Truncated => PacketError::BadCobs,
             };
         })?;
+        debug_assert!(packet_len < len, "COBS always adds at least one byte");
         return Packet::parse(&self.packet[..packet_len]);
     }
 }
