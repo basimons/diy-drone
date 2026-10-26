@@ -6,45 +6,59 @@ The protocol itself is described in [../protocol.md](../protocol.md); §7 there 
 
 ## What you use
 
+Three layers, each with its own type:
+
+```
+Message  ⇄  Packet  ⇄  frame (byte streams only)
+```
+
+- **`Message`**: a typed message, e.g. `Message::Ping(Ping { timestamp })`.
+- **`Packet`**: one message as bytes: flags, type, sequence number, payload, CRC-16 checksum (protocol.md §4.1). A
+  `Packet` can only exist after its length, checksum and flags were checked, so `Message::decode` never sees
+  unchecked bytes. Over WiFi/UDP one datagram is one packet.
+- **Frame**: on a byte stream (serial, radio), a packet is COBS-encoded (Consistent Overhead Byte Stuffing): all
+  `0x00` bytes are replaced by signposts, and one `0x00` ends the frame, so the receiver knows where each packet
+  ends (protocol.md §4.2).
+
 ```rust
-use drone_common::wire::message::{MAX_ENCODED_LEN, Message, Ping};
-use drone_common::wire::splitter::FrameSplitter;
+use drone_common::wire::message::{Message, Ping};
+use drone_common::wire::packet::{MAX_PACKET_LEN, Packet};
+use drone_common::wire::stream::{self, MAX_FRAME_LEN, StreamDecoder};
 
-// Sending: a message plus your sequence number in, ready-to-send bytes out.
-let mut buf = [0u8; MAX_ENCODED_LEN];
-let len = Message::Ping(Ping { timestamp: 1234 }).encode(sequence, &mut buf);
-port.write_all(&buf[..len])?;
+// Illustrative: `socket`, `port`, `handle`, … are yours, and `?` needs your own error type.
+let ping = Message::Ping(Ping { timestamp: 1234 });
+let mut buf = [0u8; MAX_PACKET_LEN];
 
-// Receiving from a byte stream (serial, radio): reads arrive in chunks of any size,
-// so the splitter cuts them into frames, then each frame is decoded.
-let mut splitter = FrameSplitter::new();
-let n = port.read(&mut read_buf)?;
+// UDP
+socket.send(ping.encode(sequence, &mut buf).as_bytes())?;
+let packet = Packet::parse(&datagram)?;            // PacketError: damaged, drop and count it
+let received = Message::decode(&packet)?;          // MessageError: intact but invalid, can be answered
+
+// Byte stream (serial, radio): reads arrive in chunks of any size
+let mut frame = [0u8; MAX_FRAME_LEN];
+port.write_all(stream::encode(&ping.encode(sequence, &mut buf), &mut frame))?;
+
+let mut decoder = StreamDecoder::new();
 let mut chunk = &read_buf[..n];
-while let Some(frame) = splitter.next_frame(&mut chunk) {
-    match frame.and_then(Message::decode) {
-        Ok(received) => handle(received.sequence, received.message),
-        Err(error) => stats.count(error), // dropped, e.g. DecodeError::BadCrc
+while let Some(result) = decoder.next_packet(&mut chunk) {
+    let Ok(packet) = result else { continue };     // count the PacketError
+    match Message::decode(&packet) {
+        Ok(message) => handle(packet.sequence(), message),
+        Err(error) => answer(&packet, error),      // the packet is still there for the Reply
     }
 }
-
-// Receiving over UDP: one packet is one frame, so no splitter.
-let received = Message::decode(&packet)?;
 ```
 
 | Module | Public items | What it is |
 |--------|--------------|------------|
-| `wire::message` | `Message`, one struct per message (`Hello`, `HelloReply`, `Ping`, `Pong`, …), `Received`, `DecodeError`, `MAX_ENCODED_LEN` | The messages of protocol.md §5 and their `encode` / `decode` |
-| `wire::splitter` | `FrameSplitter` | Cuts a byte stream into frames; only needed on stream transports |
+| `wire::message` | `Message`, one struct per message (`Hello`, `HelloReply`, `Ping`, `Pong`, …), `MessageError` | The messages of protocol.md §5 and their `encode` / `decode` |
+| `wire::packet` | `Packet`, `PacketError`, `MAX_PACKET_LEN` | A checked packet: `parse`, `sequence`, `as_bytes` |
+| `wire::stream` | `encode`, `StreamDecoder`, `MAX_FRAME_LEN` | COBS framing; only needed on byte streams |
 | `wire::codes` | `MessageType`, `HelloResult`, … | The numeric codes used inside messages |
 | `domain` | `RcChannels`, `ArmState`, … | Protocol-neutral state: what the sticks say, armed or not |
 | `crsf` | CRSF constants and CRC-8 | CRSF (Crossfire), the radio protocol between the ELRS receiver and the FC |
 
-## What is hidden
-
-Every message travels inside an *envelope* (flags, type, sequence number, payload, CRC-16 checksum, protocol.md §4.1).
-The envelope is then COBS-encoded (Consistent Overhead Byte Stuffing, §4.2): all `0x00` bytes are removed so that a
-single `0x00` can mark the end of each frame. Both steps happen inside `Message::encode` and `Message::decode`, so
-the envelope, CRC and COBS code are private. The splitter only knows that frames end at `0x00`.
+The CRC-16 and COBS code itself is private.
 
 ## What is not in here
 
@@ -55,9 +69,9 @@ the envelope, CRC and COBS code are private. The splitter only knows that frames
 
 ## Tests
 
-Tests are in `tests/` and use only the public API. `tests/support/` builds frames by hand, with its own CRC-16 and
-COBS code, so the library is checked against an independent implementation. `tests/encoding.rs` also pins exact
-frame bytes computed outside Rust.
+Tests are in `tests/` and use only the public API. `tests/support/` builds packets and frames by hand, with its own
+CRC-16 and COBS code, so the library is checked against an independent implementation. `tests/packet.rs` and
+`tests/stream.rs` also pin exact bytes computed outside Rust.
 
 ```sh
 cargo test -p drone-common

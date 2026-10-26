@@ -1,8 +1,9 @@
-//! Test helpers that build frames by hand, independently of the library's own CRC and COBS code.
+//! Test helpers that build packets and frames by hand, independently of the library's own CRC and COBS code.
 #![allow(dead_code)] // each test file uses a different subset
 
-use drone_common::wire::message::{DecodeError, MAX_ENCODED_LEN, Message, Received};
-use drone_common::wire::splitter::FrameSplitter;
+use drone_common::wire::message::Message;
+use drone_common::wire::packet::{MAX_PACKET_LEN, PacketError};
+use drone_common::wire::stream::{self, MAX_FRAME_LEN, StreamDecoder};
 
 /// CRC-16/CCITT-FALSE, written out bit by bit.
 pub fn crc16(data: &[u8]) -> u16 {
@@ -39,46 +40,55 @@ pub fn cobs_frame(data: &[u8]) -> Vec<u8> {
     return out;
 }
 
-/// Raw envelope bytes (flags, type, sequence, payload) plus a correct CRC, COBS-framed.
+/// Packet bytes (flags, type, sequence, payload) plus a correct CRC.
+pub fn packet(flags: u8, message_type: u8, sequence: u16, payload: &[u8]) -> Vec<u8> {
+    let mut bytes = vec![flags, message_type];
+    bytes.extend_from_slice(&sequence.to_le_bytes());
+    bytes.extend_from_slice(payload);
+    return with_crc(bytes);
+}
+
+pub fn with_crc(bytes: Vec<u8>) -> Vec<u8> {
+    let crc = crc16(&bytes);
+    return [bytes, crc.to_le_bytes().to_vec()].concat();
+}
+
+/// `packet(..)`, COBS-framed for a byte stream.
 pub fn frame(flags: u8, message_type: u8, sequence: u16, payload: &[u8]) -> Vec<u8> {
-    let mut envelope = vec![flags, message_type];
-    envelope.extend_from_slice(&sequence.to_le_bytes());
-    envelope.extend_from_slice(payload);
-    return with_crc_framed(envelope);
+    return cobs_frame(&packet(flags, message_type, sequence, payload));
 }
 
-pub fn with_crc_framed(mut envelope: Vec<u8>) -> Vec<u8> {
-    let crc = crc16(&envelope);
-    envelope.extend_from_slice(&crc.to_le_bytes());
-    return cobs_frame(&envelope);
+pub fn encode_packet(message: &Message, sequence: u16) -> Vec<u8> {
+    let mut out = [0u8; MAX_PACKET_LEN];
+    return message.encode(sequence, &mut out).as_bytes().to_vec();
 }
 
-pub fn encode(message: &Message, sequence: u16) -> Vec<u8> {
-    let mut out = [0u8; MAX_ENCODED_LEN];
-    let len = message.encode(sequence, &mut out);
-    return out[..len].to_vec();
+pub fn encode_frame(message: &Message, sequence: u16) -> Vec<u8> {
+    let mut packet = [0u8; MAX_PACKET_LEN];
+    let mut frame = [0u8; MAX_FRAME_LEN];
+    return stream::encode(&message.encode(sequence, &mut packet), &mut frame).to_vec();
 }
 
-/// Feeds `bytes` to one splitter in chunks of `chunk_size` and returns every frame it produced, in order.
-pub fn split(bytes: &[u8], chunk_size: usize) -> Vec<Result<Vec<u8>, DecodeError>> {
-    let mut splitter = FrameSplitter::new();
-    let mut frames = Vec::new();
+/// Feeds `bytes` to one decoder in chunks of `chunk_size`; returns the bytes of every packet, in order.
+pub fn split(bytes: &[u8], chunk_size: usize) -> Vec<Result<Vec<u8>, PacketError>> {
+    let mut decoder = StreamDecoder::new();
+    let mut packets = Vec::new();
     for mut chunk in bytes.chunks(chunk_size) {
-        while let Some(frame) = splitter.next_frame(&mut chunk) {
-            frames.push(frame.map(|f| return f.to_vec()));
+        while let Some(packet) = decoder.next_packet(&mut chunk) {
+            packets.push(packet.map(|p| return p.as_bytes().to_vec()));
         }
-        assert!(chunk.is_empty(), "next_frame returned None before using up the chunk");
+        assert!(chunk.is_empty(), "next_packet returned None before using up the chunk");
     }
-    return frames;
+    return packets;
 }
 
-/// Splits `bytes` (as one chunk) and decodes every frame, the way a stream transport would.
-pub fn read_all(bytes: &[u8]) -> Vec<Result<Received, DecodeError>> {
-    let mut splitter = FrameSplitter::new();
+/// Splits `bytes` as one chunk and returns every packet's sequence number and decoded message.
+pub fn read_all(bytes: &[u8]) -> Vec<Result<(u16, Message), PacketError>> {
+    let mut decoder = StreamDecoder::new();
     let mut chunk = bytes;
     let mut results = Vec::new();
-    while let Some(frame) = splitter.next_frame(&mut chunk) {
-        results.push(frame.and_then(Message::decode));
+    while let Some(packet) = decoder.next_packet(&mut chunk) {
+        results.push(packet.map(|p| return (p.sequence(), Message::decode(&p).expect("valid message"))));
     }
     return results;
 }

@@ -2,6 +2,7 @@ mod support;
 
 use drone_common::wire::codes::HelloResult;
 use drone_common::wire::message::*;
+use drone_common::wire::packet::Packet;
 use support::*;
 
 const HELLO: u8 = 0x01;
@@ -10,18 +11,23 @@ const PING: u8 = 0x03;
 const PONG: u8 = 0x04;
 const MAX_PAYLOAD_LEN: usize = 249; // protocol.md §4.1
 
-/// Decodes a hand-built frame with sequence 0.
-fn decode(message_type: u8, payload: &[u8]) -> Result<Message, DecodeError> {
-    return Message::decode(&frame(0, message_type, 0, payload)).map(|r| return r.message);
+fn decode_with_sequence(message_type: u8, sequence: u16, payload: &[u8]) -> Result<Message, MessageError> {
+    let bytes = packet(0, message_type, sequence, payload);
+    return Message::decode(&Packet::parse(&bytes).unwrap());
 }
 
-/// Encodes `message`, checks it against a hand-built frame, and checks it decodes back to `message`.
+/// Decodes a hand-built packet with sequence 0.
+fn decode(message_type: u8, payload: &[u8]) -> Result<Message, MessageError> {
+    return decode_with_sequence(message_type, 0, payload);
+}
+
+/// Encodes `message`, checks it against a hand-built packet, and checks it decodes back to `message`.
 fn check(message: Message, message_type: u8, payload: &[u8]) {
     let handshake = message_type == HELLO || message_type == HELLO_REPLY;
     let sequence = if handshake { 0 } else { 42 };
-    let encoded = encode(&message, 42);
-    assert_eq!(encoded, frame(0, message_type, sequence, payload));
-    assert_eq!(Message::decode(&encoded), Ok(Received { sequence, message }));
+    let encoded = encode_packet(&message, 42);
+    assert_eq!(encoded, packet(0, message_type, sequence, payload));
+    assert_eq!(Message::decode(&Packet::parse(&encoded).unwrap()), Ok(message));
 }
 
 #[test]
@@ -52,7 +58,7 @@ fn hello_keeps_unknown_option_bits() {
             options
         })
     );
-    assert_eq!(encode(&decoded, 0), frame(0, HELLO, 0, &payload));
+    assert_eq!(encode_packet(&decoded, 0), packet(0, HELLO, 0, &payload));
 }
 
 #[test]
@@ -85,12 +91,12 @@ fn hello_and_hello_reply_always_use_sequence_0() {
         protocol_version: 1,
         options: Options::default(),
     });
-    assert_eq!(Message::decode(&encode(&hello, 9)).map(|r| return r.sequence), Ok(0));
+    assert_eq!(Packet::parse(&encode_packet(&hello, 9)).unwrap().sequence(), 0);
     for (message_type, payload) in [(HELLO, vec![1, 0, 0, 0, 0]), (HELLO_REPLY, vec![1, 0, 0, 0, 0, 0])] {
-        let decoded = Message::decode(&frame(0, message_type, 7, &payload));
+        let decoded = decode_with_sequence(message_type, 7, &payload);
         assert_eq!(
             decoded,
-            Err(DecodeError::InvalidValue),
+            Err(MessageError::InvalidValue),
             "type {message_type} with sequence 7"
         );
     }
@@ -116,7 +122,7 @@ fn hello_reply_every_result() {
 fn hello_reply_rejects_unknown_result() {
     for byte in [3, 0xFF] {
         let decoded = decode(HELLO_REPLY, &[1, byte, 0, 0, 0, 0]);
-        assert_eq!(decoded, Err(DecodeError::InvalidValue), "result {byte}");
+        assert_eq!(decoded, Err(MessageError::InvalidValue), "result {byte}");
     }
 }
 
@@ -147,9 +153,15 @@ fn rejects_wrong_payload_length() {
             let decoded = decode(message_type, &vec![0; wrong]);
             assert_eq!(
                 decoded,
-                Err(DecodeError::WrongLength),
+                Err(MessageError::WrongLength),
                 "type {message_type} with {wrong} bytes"
             );
         }
     }
+}
+
+#[test]
+fn unknown_type_is_reported_with_its_byte() {
+    // The drone answers with Reply "unknown type", so it must see the byte.
+    assert_eq!(decode(0xEE, &[]), Err(MessageError::UnknownType(0xEE)));
 }
