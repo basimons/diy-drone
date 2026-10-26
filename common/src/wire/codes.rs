@@ -1,6 +1,6 @@
 //! One-byte codes from protocol.md §5.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct UnknownCode(pub u8);
 
 /// Defines a one-byte code enum with conversions to and from `u8`.
@@ -32,7 +32,7 @@ macro_rules! wire_enum {
     };
     ($(#[$meta:meta])* $name:ident $(with $unknown:ident)? { $($variant:ident = $value:literal,)* }) => {
         $(#[$meta])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum $name {
             $($variant,)*
             $($unknown(u8),)? // only produced by decoding, never holds a known code
@@ -126,7 +126,7 @@ wire_enum!(
 );
 
 /// Why a Reply has its Status, e.g. "battery low". The list is still to be decided (protocol.md §9).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ReasonCode(pub u16);
 
 impl ReasonCode {
@@ -134,9 +134,82 @@ impl ReasonCode {
 }
 
 /// What an Event is about, machine-readable. The list is still to be decided (protocol.md §9).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EventCode(pub u16);
 
 impl EventCode {
     pub const NONE: Self = Self(0);
 }
+
+/// A type byte that is not a known message type. Can't hold a known byte, unlike `MessageType::Unknown`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct UnknownType(u8);
+
+impl UnknownType {
+    pub fn from_byte(byte: u8) -> Option<Self> {
+        return match MessageType::from(byte) {
+            MessageType::Unknown(_) => Some(Self(byte)),
+            _ => None,
+        };
+    }
+
+    pub fn byte(self) -> u8 {
+        return self.0;
+    }
+}
+
+/// A known message type that is not a request, so a Reply can't answer it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NotARequest(pub MessageType);
+
+/// Defines `RequestType` as the listed `MessageType`s plus `Unknown`, with conversions both ways.
+macro_rules! request_types {
+    ($($name:ident,)*) => {
+        /// What a Reply can answer: a request (protocol.md §5.0), or a type the drone doesn't know.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum RequestType {
+            $($name,)*
+            Unknown(UnknownType),
+        }
+
+        impl From<RequestType> for MessageType {
+            fn from(request: RequestType) -> Self {
+                return match request {
+                    $(RequestType::$name => MessageType::$name,)*
+                    RequestType::Unknown(unknown) => MessageType::Unknown(unknown.0),
+                };
+            }
+        }
+
+        impl TryFrom<MessageType> for RequestType {
+            type Error = NotARequest;
+
+            fn try_from(message_type: MessageType) -> Result<Self, NotARequest> {
+                // Re-reading the byte turns a hand-made `MessageType::Unknown(0x20)` into `Arm`.
+                return match MessageType::from(u8::from(message_type)) {
+                    $(MessageType::$name => Ok(RequestType::$name),)*
+                    MessageType::Unknown(byte) => Ok(RequestType::Unknown(UnknownType(byte))),
+                    other => Err(NotARequest(other)),
+                };
+            }
+        }
+    };
+}
+
+request_types!(
+    LinkTest,
+    Arm,
+    Disarm,
+    TakeOff,
+    Land,
+    GoHome,
+    Flip,
+    SteadyState,
+    ExitSteadyState,
+    SetSettings,
+    GetSettings,
+    RequestOnce,
+    Subscribe,
+    ListLogs,
+    ReadLog,
+);

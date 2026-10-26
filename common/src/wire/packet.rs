@@ -11,7 +11,7 @@ pub const MAX_PACKET_LEN: usize = 255;
 pub(crate) const MAX_PAYLOAD_LEN: usize = MAX_PACKET_LEN - HEADER_LEN - CRC_LEN;
 
 /// Why bytes are not an intact packet. Dropped silently and counted for link-quality stats (protocol.md §4.2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PacketError {
     TooShort,
     TooLong,
@@ -37,7 +37,7 @@ impl core::error::Error for PacketError {}
 
 /// Bytes that passed the length, CRC and flags checks. Made only by `Packet::parse`, `Message::encode` and
 /// `StreamDecoder`, so `Message::decode` never sees unchecked bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Packet<'a> {
     bytes: &'a [u8],
 }

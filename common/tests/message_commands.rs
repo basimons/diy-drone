@@ -62,7 +62,7 @@ fn commands_reject_request_id_0() {
 #[test]
 fn commands_reject_wrong_length() {
     for (_, message_type) in SIMPLE {
-        check_only_length(message_type, 2, 1);
+        check_only_length(message_type, &[1, 0]);
     }
-    check_only_length(FLIP, 6, 1);
+    check_only_length(FLIP, &[1, 0, 0, 0, 0, 0]);
 }

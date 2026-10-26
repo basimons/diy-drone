@@ -41,5 +41,5 @@ fn sticks_extremes() {
 
 #[test]
 fn sticks_rejects_wrong_length() {
-    check_only_length(STICKS, 8, 0);
+    check_only_length(STICKS, &[0; 8]);
 }

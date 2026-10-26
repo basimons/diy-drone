@@ -107,15 +107,24 @@ pub fn check_round_trip(message: Message, message_type: u8, payload: &[u8]) {
     assert_eq!(decode_payload(message_type, payload), Ok(message));
 }
 
-/// Every payload length other than `length` is `WrongLength`.
-pub fn check_only_length(message_type: u8, length: usize, fill: u8) {
-    for wrong in [0, length.saturating_sub(1), length + 1, 249] {
-        if wrong == length {
+/// `valid` decodes, but the same payload cut short or with bytes added is `WrongLength`.
+pub fn check_only_length(message_type: u8, valid: &[u8]) {
+    assert!(
+        decode_payload(message_type, valid).is_ok(),
+        "type {message_type:#04x}: {valid:?} should decode"
+    );
+    let longest = [valid, &[0; 249][valid.len()..]].concat();
+    for wrong in [0, valid.len().saturating_sub(1), valid.len() + 1, 249] {
+        if wrong == valid.len() {
             continue;
         }
-        let decoded = decode_payload(message_type, &vec![fill; wrong]);
+        let payload = if wrong < valid.len() {
+            &valid[..wrong]
+        } else {
+            &longest[..wrong]
+        };
         assert_eq!(
-            decoded,
+            decode_payload(message_type, payload),
             Err(MessageError::WrongLength),
             "type {message_type:#04x} with {wrong} bytes"
         );

@@ -1,13 +1,13 @@
 mod support;
 
-use drone_common::wire::codes::{EventCode, EventLevel, MessageType, ReasonCode, Status};
+use drone_common::wire::codes::{EventCode, EventLevel, ReasonCode, RequestType, Status, UnknownType};
 use drone_common::wire::message::{Event, EventText, MAX_EVENT_TEXT_LEN, Message, MessageError, Reply, RequestId};
 use support::*;
 
 const REPLY: u8 = 0x40;
 const EVENT: u8 = 0x41;
 
-fn reply(answers: MessageType, status: Status, reason: u16) -> Message {
+fn reply(answers: RequestType, status: Status, reason: u16) -> Message {
     return Message::Reply(Reply {
         request_id: RequestId::new(0x0102).unwrap(),
         answers,
@@ -27,14 +27,18 @@ fn reply_every_status() {
         (Status::Busy, 5),
     ];
     for (status, byte) in statuses {
-        let message = reply(MessageType::Flip, status, 0xBEEF);
+        let message = reply(RequestType::Flip, status, 0xBEEF);
         check_round_trip(message, REPLY, &[0x02, 0x01, 0x25, byte, 0xEF, 0xBE]);
     }
 }
 
 #[test]
 fn reply_to_an_unknown_type_keeps_its_byte() {
-    let message = reply(MessageType::Unknown(0xEE), Status::UnknownType, 0);
+    let message = reply(
+        RequestType::Unknown(UnknownType::from_byte(0xEE).unwrap()),
+        Status::UnknownType,
+        0,
+    );
     check_round_trip(message, REPLY, &[0x02, 0x01, 0xEE, 2, 0, 0]);
 }
 
@@ -42,7 +46,7 @@ fn reply_to_an_unknown_type_keeps_its_byte() {
 fn reply_without_a_reason() {
     assert_eq!(ReasonCode::NONE, ReasonCode(0));
     check_round_trip(
-        reply(MessageType::Arm, Status::Ok, 0),
+        reply(RequestType::Arm, Status::Ok, 0),
         REPLY,
         &[0x02, 0x01, 0x20, 0, 0, 0],
     );
@@ -50,9 +54,12 @@ fn reply_without_a_reason() {
 
 #[test]
 fn reply_rejects_bad_values() {
-    let cases: [(&str, [u8; 6]); 2] = [
+    let cases: [(&str, [u8; 6]); 5] = [
         ("Request ID 0", [0, 0, 0x20, 0, 0, 0]),
         ("unknown status", [1, 0, 0x20, 6, 0, 0]),
+        ("answers Sticks, not a request", [1, 0, 0x10, 0, 0, 0]),
+        ("answers Hello, not a request", [1, 0, 0x01, 0, 0, 0]),
+        ("answers a Reply, not a request", [1, 0, 0x40, 0, 0, 0]),
     ];
     for (case, payload) in cases {
         assert_eq!(
@@ -65,7 +72,7 @@ fn reply_rejects_bad_values() {
 
 #[test]
 fn reply_rejects_wrong_length() {
-    check_only_length(REPLY, 6, 1);
+    check_only_length(REPLY, &[1, 0, 0x20, 0, 0, 0]);
 }
 
 fn event(level: EventLevel, code: u16, text: &str) -> Message {

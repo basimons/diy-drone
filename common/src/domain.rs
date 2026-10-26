@@ -6,7 +6,7 @@ pub const CHANNEL_MID: u16 = 992;
 pub const CHANNEL_MAX: u16 = 1811;
 
 /// In raw CRSF units.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RcChannels(pub [u16; CHANNEL_COUNT]);
 
 impl Default for RcChannels {
@@ -15,7 +15,7 @@ impl Default for RcChannels {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum ArmState {
     #[default]
     Disarmed,
@@ -23,7 +23,7 @@ pub enum ArmState {
 }
 
 /// Stick positions, protocol-neutral (protocol.md §5.2). What they mean is up to the flight code.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Sticks {
     pub throttle: u16, // 0 … 65535, no centre
     pub roll: i16,     // 0 = centred
@@ -32,7 +32,7 @@ pub struct Sticks {
 }
 
 /// Something the pilot asks the drone to do (protocol.md §5.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Command {
     Arm,
     Disarm,
@@ -44,7 +44,7 @@ pub enum Command {
     ExitSteadyState,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Flip {
     pub direction: u16, // 0 = forward, clockwise seen from above, a full circle over 0 … 65535
     pub duration_ms: u16,

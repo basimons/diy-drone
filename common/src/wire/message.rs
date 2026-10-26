@@ -3,11 +3,11 @@
 use core::num::NonZeroU16;
 
 use crate::domain::{Command, Flip, Sticks};
-use crate::wire::codes::{EventCode, EventLevel, HelloResult, MessageType, ReasonCode, Status};
+use crate::wire::codes::{EventCode, EventLevel, HelloResult, MessageType, ReasonCode, RequestType, Status};
 use crate::wire::packet::{MAX_PACKET_LEN, MAX_PAYLOAD_LEN, Packet};
 
 /// Why an intact packet is not a valid message. Unlike a `PacketError`, the sender can be told (protocol.md §5.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MessageError {
     UnknownType(u8),
     WrongLength,  // payload length doesn't match the message type
@@ -27,7 +27,7 @@ impl core::fmt::Display for MessageError {
 impl core::error::Error for MessageError {}
 
 /// Hello/HelloReply options (protocol.md §5.1).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Options {
     pub authentication: bool,
     pub unknown: u32, // bits without a meaning yet, kept so the drone can answer "option not supported"
@@ -49,25 +49,25 @@ impl Options {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Hello {
     pub protocol_version: u8,
     pub options: Options,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct HelloReply {
     pub protocol_version: u8,
     pub result: HelloResult,
     pub options: Options,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Ping {
     pub timestamp: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Pong {
     pub ping_time: u32,
     pub receive_time: u32,
@@ -89,22 +89,22 @@ impl RequestId {
 }
 
 /// One of the commands of protocol.md §5.3; each has its own message type on the wire.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CommandRequest {
     pub request_id: RequestId,
     pub command: Command,
 }
 
 /// The drone's answer to a request it has no data message for, or that failed (protocol.md §5.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Reply {
     pub request_id: RequestId,
-    pub answers: MessageType, // the type of the request; `Unknown` when answering a type we don't know
+    pub answers: RequestType,
     pub status: Status,
     pub reason: ReasonCode,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Event {
     pub level: EventLevel,
     pub code: EventCode,
@@ -115,7 +115,7 @@ pub struct Event {
 pub const MAX_EVENT_TEXT_LEN: usize = MAX_PAYLOAD_LEN - 3;
 
 /// UTF-8 text of at most `MAX_EVENT_TEXT_LEN` bytes, owned (protocol.md §7.1).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EventText {
     bytes: [u8; MAX_EVENT_TEXT_LEN], // zero after `len`, so the derived `PartialEq` compares the text only
     len: usize,
@@ -154,7 +154,7 @@ impl core::fmt::Debug for EventText {
 }
 
 #[allow(clippy::large_enum_variant)] // owned messages are as big as the biggest one, on purpose (protocol.md §7.1)
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Message {
     Hello(Hello),
     HelloReply(HelloReply),
@@ -224,7 +224,7 @@ impl Message {
             }
             Message::Reply(m) => {
                 w.u16(m.request_id.get());
-                w.u8(u8::from(m.answers));
+                w.u8(u8::from(MessageType::from(m.answers)));
                 w.u8(u8::from(m.status));
                 w.u16(m.reason.0);
             }
@@ -283,7 +283,7 @@ impl Message {
             }),
             MessageType::Reply => Message::Reply(Reply {
                 request_id: r.request_id()?,
-                answers: MessageType::from(r.u8()?),
+                answers: RequestType::try_from(MessageType::from(r.u8()?)).map_err(invalid)?,
                 status: Status::try_from(r.u8()?).map_err(invalid)?,
                 reason: ReasonCode(r.u16()?),
             }),

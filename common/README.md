@@ -55,7 +55,7 @@ while let Some(result) = decoder.next_packet(&mut chunk) {
 | `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Reply`, `Event`, …), `CommandRequest`, `RequestId`, `EventText`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode` |
 | `wire::packet` | `Packet`, `PacketError`, `MAX_PACKET_LEN` | A checked packet: `parse`, `sequence`, `as_bytes` |
 | `wire::stream` | `encode`, `StreamDecoder`, `MAX_FRAME_LEN` | COBS framing; only needed on byte streams |
-| `wire::codes` | `MessageType`, `Status`, `ReasonCode`, `EventLevel`, `EventCode`, … | The numeric codes used inside messages |
+| `wire::codes` | `MessageType`, `RequestType`, `Status`, `ReasonCode`, `EventLevel`, `EventCode`, … | The numeric codes used inside messages |
 | `domain` | `Sticks`, `Command`, `Flip`, `ArmState`, `RcChannels` | Protocol-neutral state: what the sticks say, what the pilot asks, armed or not |
 | `crsf` | CRSF constants and CRC-8 | CRSF (Crossfire), the radio protocol between the ELRS receiver and the FC |
 
