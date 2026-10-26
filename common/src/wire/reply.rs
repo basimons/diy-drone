@@ -1,7 +1,8 @@
 //! Reply (protocol.md §5.4): the drone's answer to a request, typed per request.
 
-use crate::wire::codes::code;
-use crate::wire::message::{Answer, MessageError, Request, RequestId};
+use crate::wire::macros::code;
+use crate::wire::message::{Answer, Message, MessageError, Request, RequestId};
+use crate::wire::packet::Packet;
 use crate::wire::payload::{Code, Reader, Wire, Writer};
 
 /// The drone's answer to a request (protocol.md §5.4).
@@ -19,13 +20,26 @@ impl Reply {
             answer: R::answer(outcome),
         };
     }
+
+    /// The Reply to a packet `Message::decode` rejected: "malformed" for a request, "unknown type" for a type this
+    /// build doesn't know. `None` if the packet decodes, isn't a request, or is too short to hold a Request ID.
+    /// Drone side only: the client never sends Replies.
+    pub fn to_invalid(packet: &Packet) -> Option<Self> {
+        if Message::decode(packet).is_ok() {
+            return None;
+        }
+        return Some(Self {
+            request_id: RequestId::read(&mut Reader::new(packet.payload())).ok()?,
+            answer: Answer::to_invalid(packet.message_type())?,
+        });
+    }
 }
 
-/// Why a request failed. On the wire: the Status, plus the Reason for `Refused`.
+/// Why a decoded request failed. On the wire: the Status, plus the Reason for `Refused`. A request that didn't
+/// decode is `Answer::Malformed`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Failure<R> {
     Refused(R),
-    Malformed,
     NotSupported,
     Busy,
     NotAllowedNow, // allowed in general, but not in the drone's current state (e.g. steady state)
@@ -49,7 +63,6 @@ pub(crate) fn outcome_to_wire<R: Code<Repr = u16>>(outcome: Result<(), Failure<R
     let (status, reason) = match outcome {
         Ok(()) => (Status::Ok, 0),
         Err(Failure::Refused(refusal)) => (Status::Refused, refusal.repr()),
-        Err(Failure::Malformed) => (Status::Malformed, 0),
         Err(Failure::NotSupported) => (Status::NotSupported, 0),
         Err(Failure::Busy) => (Status::Busy, 0),
         Err(Failure::NotAllowedNow) => (Status::NotAllowedNow, 0),
@@ -70,11 +83,10 @@ pub(crate) fn outcome_from_wire<R: Code<Repr = u16>>(
         (Status::Refused, _) => Ok(Err(Failure::Refused(R::from_repr(reason)?))),
         (_, 1..) => Err(MessageError::InvalidValue), // only a refusal has a Reason
         (Status::Ok, 0) => Ok(Ok(())),
-        (Status::Malformed, 0) => Ok(Err(Failure::Malformed)),
         (Status::NotSupported, 0) => Ok(Err(Failure::NotSupported)),
         (Status::Busy, 0) => Ok(Err(Failure::Busy)),
         (Status::NotAllowedNow, 0) => Ok(Err(Failure::NotAllowedNow)),
-        (Status::UnknownType, 0) => Err(MessageError::InvalidValue), // only answers a type the drone doesn't know
+        (Status::Malformed | Status::UnknownType, 0) => Err(MessageError::InvalidValue), // not per request
     };
 }
 

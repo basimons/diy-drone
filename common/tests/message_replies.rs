@@ -1,8 +1,8 @@
 mod support;
 
 use core::convert::Infallible;
-use drone_common::wire::codes::*;
 use drone_common::wire::message::*;
+use drone_common::wire::packet::Packet;
 use drone_common::wire::reply::{Failure, Reply};
 use support::*;
 
@@ -71,8 +71,7 @@ fn every_refusal_with_its_reason() {
 
 #[test]
 fn failures_without_a_reason() {
-    let cases: [(Failure<Infallible>, u8); 4] = [
-        (Failure::Malformed, 3),
+    let cases: [(Failure<Infallible>, u8); 3] = [
         (Failure::NotSupported, 4),
         (Failure::Busy, 5),
         (Failure::NotAllowedNow, 6), // e.g. in steady state
@@ -107,6 +106,58 @@ fn reply_to_takes_request_id_and_type_from_the_request() {
         request_id: RequestId(10),
     };
     assert_eq!(Reply::to(&arm, Ok(())).answer, Answer::Arm(Ok(())));
+}
+
+#[test]
+fn malformed() {
+    check_round_trip(reply(Answer::Malformed(RequestType::Arm)), REPLY, &payload(0x20, 3, 0));
+    check_round_trip(reply(Answer::Malformed(RequestType::Flip)), REPLY, &payload(0x25, 3, 0));
+}
+
+/// A packet with this type and payload, as `Packet::parse` gives it.
+fn reply_to_invalid(message_type: u8, sequence: u16, payload: &[u8]) -> Option<Reply> {
+    let bytes = packet(0, message_type, sequence, payload);
+    return Reply::to_invalid(&Packet::parse(&bytes).unwrap());
+}
+
+#[test]
+fn reply_to_a_malformed_request() {
+    let malformed = |id, request_type| {
+        return Some(Reply {
+            request_id: RequestId(id),
+            answer: Answer::Malformed(request_type),
+        });
+    };
+    assert_eq!(reply_to_invalid(0x20, 1, &[5, 0, 9]), malformed(5, RequestType::Arm));
+    assert_eq!(
+        reply_to_invalid(0x25, 1, &[6, 1, 0]),
+        malformed(0x0106, RequestType::Flip)
+    );
+    assert_eq!(reply_to_invalid(0x25, 1, &[6, 1]), malformed(0x0106, RequestType::Flip));
+}
+
+#[test]
+fn reply_to_an_unknown_type() {
+    let expected = Reply {
+        request_id: RequestId(7),
+        answer: Answer::UnknownType(UnknownType::new(0xEE).unwrap()),
+    };
+    assert_eq!(reply_to_invalid(0xEE, 1, &[7, 0]), Some(expected));
+}
+
+#[test]
+fn no_reply_when_there_is_nothing_to_answer() {
+    let cases: [(&str, u8, u16, &[u8]); 6] = [
+        ("a valid request", 0x20, 1, &[5, 0]),
+        ("too short for a Request ID", 0x20, 1, &[5]),
+        ("unknown type too short for a Request ID", 0xEE, 1, &[]),
+        ("not a request", 0x10, 1, &[0; 3]),
+        ("Hello, not a request", 0x01, 7, &[1, 0, 0, 0, 0]),
+        ("Reply, not a request", 0x40, 1, &[1, 0, 0x20]),
+    ];
+    for (case, message_type, sequence, payload) in cases {
+        assert_eq!(reply_to_invalid(message_type, sequence, payload), None, "{case}");
+    }
 }
 
 #[test]
@@ -155,6 +206,8 @@ fn rejects_impossible_combinations() {
         ("Refused without a reason", payload(0x20, 1, 0)),
         ("Busy with a reason", payload(0x20, 5, 1)),
         ("Malformed with a reason", payload(0x20, 3, 1)),
+        ("Malformed for a type that is not a request", payload(0x10, 3, 0)),
+        ("Malformed for an unknown type", payload(0xEE, 3, 0)),
         ("Not supported with a reason", payload(0x20, 4, 1)),
         ("Not allowed now with a reason", payload(0x25, 6, 1)),
         ("Disarm refused", payload(0x21, 1, 1)),

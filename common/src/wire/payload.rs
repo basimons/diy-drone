@@ -1,6 +1,8 @@
 //! Reading and writing the little-endian fields of a payload. `Wire` and `Code` are public but live in this private
 //! module, so other crates use the types that implement them without being able to call or implement them.
 
+use core::convert::Infallible;
+
 use crate::wire::message::MessageError;
 use crate::wire::packet::MAX_PAYLOAD_LEN;
 
@@ -31,37 +33,58 @@ impl<C: Code> Wire for C {
     }
 }
 
-/// Implements `Wire` for a struct whose fields are written one after the other, in the order listed. The fields are
-/// listed once for both directions, and the struct literal makes the compiler check none is missing.
-macro_rules! impl_wire {
-    ($name:ident { $($field:ident),* }) => {
-        impl $crate::wire::payload::Wire for $name {
-            fn read(_r: &mut $crate::wire::payload::Reader) -> Result<Self, $crate::wire::message::MessageError> {
-                return Ok(Self { $($field: $crate::wire::payload::Wire::read(_r)?,)* });
-            }
+/// The refusal of requests that are never refused (e.g. Disarm): `Failure::Refused` can't be built for them.
+impl Code for Infallible {
+    type Repr = u16;
 
-            fn write(&self, _w: &mut $crate::wire::payload::Writer) {
-                $($crate::wire::payload::Wire::write(&self.$field, _w);)*
-            }
-        }
-    };
+    fn from_repr(_: u16) -> Result<Self, MessageError> {
+        return Err(MessageError::InvalidValue);
+    }
+
+    fn repr(self) -> u16 {
+        match self {} // no value exists, so there is nothing to `return`
+    }
 }
-pub(crate) use impl_wire;
 
-macro_rules! wire_number {
-    ($($ty:ty),*) => {$(
-        impl Wire for $ty {
-            fn read(r: &mut Reader) -> Result<Self, MessageError> {
-                return Ok(<$ty>::from_le_bytes(r.take()?));
-            }
+impl Wire for u8 {
+    fn read(r: &mut Reader) -> Result<Self, MessageError> {
+        return Ok(Self::from_le_bytes(r.take()?));
+    }
 
-            fn write(&self, w: &mut Writer) {
-                w.put(&self.to_le_bytes());
-            }
-        }
-    )*};
+    fn write(&self, w: &mut Writer) {
+        w.put(&self.to_le_bytes());
+    }
 }
-wire_number!(u8, u16, i16, u32);
+
+impl Wire for u16 {
+    fn read(r: &mut Reader) -> Result<Self, MessageError> {
+        return Ok(Self::from_le_bytes(r.take()?));
+    }
+
+    fn write(&self, w: &mut Writer) {
+        w.put(&self.to_le_bytes());
+    }
+}
+
+impl Wire for i16 {
+    fn read(r: &mut Reader) -> Result<Self, MessageError> {
+        return Ok(Self::from_le_bytes(r.take()?));
+    }
+
+    fn write(&self, w: &mut Writer) {
+        w.put(&self.to_le_bytes());
+    }
+}
+
+impl Wire for u32 {
+    fn read(r: &mut Reader) -> Result<Self, MessageError> {
+        return Ok(Self::from_le_bytes(r.take()?));
+    }
+
+    fn write(&self, w: &mut Writer) {
+        w.put(&self.to_le_bytes());
+    }
+}
 
 pub(crate) fn invalid<E>(_: E) -> MessageError {
     return MessageError::InvalidValue;

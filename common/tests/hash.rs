@@ -1,6 +1,5 @@
 //! Every public value type can be a `HashMap`/`HashSet` key, e.g. for the client to track what it sent.
 use drone_common::domain::*;
-use drone_common::wire::codes::*;
 use drone_common::wire::event::*;
 use drone_common::wire::message::*;
 use drone_common::wire::packet::{Packet, PacketError};
@@ -41,6 +40,7 @@ fn public_types_are_hashable() {
         key_type::<HelloResult>(),
         key_type::<EventLevel>(),
         key_type::<Answer>(),
+        key_type::<RequestType>(),
         key_type::<Failure<ArmRefusal>>(),
         key_type::<ArmRefusal>(),
         key_type::<UnknownOptions>(),

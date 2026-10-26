@@ -1,6 +1,5 @@
 mod support;
 
-use drone_common::wire::codes::HelloResult;
 use drone_common::wire::message::*;
 use drone_common::wire::packet::Packet;
 use support::*;

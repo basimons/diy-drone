@@ -416,6 +416,8 @@ What a Reply may say depends on the request:
 Rules:
 
 - Status unknown type (2) only answers a Type the drone doesn't know, always with Reason 0. A known Type is never answered with it.
+- Status malformed (3) answers a request that didn't decode (e.g. wrong length), always with Reason 0. A malformed message that isn't a request (e.g. Sticks) gets no Reply.
+- For unknown type and malformed, the Request ID is the first 2 bytes of the payload. A payload shorter than that can't be answered and gets no Reply.
 - Any other combination is invalid: OK to a request whose success is a data message, OK or busy with a Reason, refused without one, refused for a request that is never refused, an Answers Type that is not a request (e.g. Sticks).
 - A Status or Reason the receiver doesn't know makes the Reply invalid. Both sides passed Hello with the same protocol version, so they know the same codes (§2).
 
@@ -792,12 +794,14 @@ common/src/
     cobs.rs       (private)
     packet.rs     Packet: checked Flags / Type / Sequence / Payload / (Auth Tag) / CRC; PacketError
     stream.rs     COBS framing for byte streams: stream::encode, StreamDecoder
-    message.rs    enum Message { Hello(..), Sticks(..), Arm(..), Reply(..), Event(..), ... } + encode / decode; MessageError;
-                  one list of message types makes Message, Answer and the type bytes; Request ties a request to its refusals
-    reply.rs      Reply { request_id, answer: Answer }: typed per request; Reply::to(&request, outcome); Failure
-    event.rs      Event: one struct per event (Armed, BatteryLow { millivolts }, ...), Text
+    message.rs    the list of messages: each message's struct, type byte and (for requests) refusal codes, written once;
+                  enum Message { Hello(..), Sticks(..), Arm(..), ... } + encode / decode; Answer; Request; MessageError
+    reply.rs      Reply { request_id, answer: Answer }: typed per request; Reply::to(&request, outcome);
+                  Reply::to_invalid(&packet) for "malformed" / "unknown type"; Failure
+    event.rs      the list of events (Armed, BatteryLow { millivolts }, ...) with code and level, written once;
+                  Text with EventText, a string that needs no heap
     payload.rs    (private) Wire: how each field reads and writes itself; Code: enums stored as numbers
-    codes.rs      HelloResult, EventLevel, FailsafeCause, per-request refusal codes (ArmRefusal, ...)
+    macros/       (private) code!, wire_struct!, messages!, events!: turn those lists into types
   crsf.rs      CRC-8, CRSF frame parsing, CRSF channels → Sticks
 ```
 

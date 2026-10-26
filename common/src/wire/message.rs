@@ -1,12 +1,10 @@
 //! The messages of protocol.md §5, as owned Rust types with encode/decode.
 
-use core::convert::Infallible;
-
 use crate::domain::Sticks;
-use crate::wire::codes::{ArmRefusal, FlipRefusal, HelloResult, LandRefusal, SteadyStateRefusal, TakeOffRefusal};
 use crate::wire::event::Event;
+use crate::wire::macros::{code, messages};
 use crate::wire::packet::{MAX_PACKET_LEN, Packet};
-use crate::wire::payload::{Code, Reader, Wire, Writer, impl_wire};
+use crate::wire::payload::{Code, Reader, Wire, Writer};
 use crate::wire::reply::{Failure, Reply, Status, outcome_from_wire, outcome_to_wire};
 
 /// Why an intact packet is not a valid message. Unlike a `PacketError`, the sender can be told (protocol.md §5.4).
@@ -94,52 +92,32 @@ impl Wire for Options {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Hello {
-    pub protocol_version: u8,
-    pub options: Options,
-}
-impl_wire!(Hello {
-    protocol_version,
-    options
-});
+code!(
+    /// Never changes between protocol versions, like the rest of Hello and HelloReply (protocol.md §5.1).
+    pub HelloResult: u8 {
+        Ok = 0,
+        VersionMismatch = 1,
+        OptionNotSupported = 2,
+    }
+);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct HelloReply {
-    pub protocol_version: u8,
-    pub result: HelloResult,
-    pub options: Options,
-}
-impl_wire!(HelloReply {
-    protocol_version,
-    result,
-    options
-});
+impl Wire for Sticks {
+    fn read(r: &mut Reader) -> Result<Self, MessageError> {
+        return Ok(Self {
+            throttle: u16::read(r)?,
+            roll: i16::read(r)?,
+            pitch: i16::read(r)?,
+            yaw: i16::read(r)?,
+        });
+    }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Ping {
-    pub timestamp: u32,
+    fn write(&self, w: &mut Writer) {
+        self.throttle.write(w);
+        self.roll.write(w);
+        self.pitch.write(w);
+        self.yaw.write(w);
+    }
 }
-impl_wire!(Ping { timestamp });
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Pong {
-    pub ping_time: u32,
-    pub receive_time: u32,
-    pub send_time: u32,
-}
-impl_wire!(Pong {
-    ping_time,
-    receive_time,
-    send_time
-});
-
-impl_wire!(Sticks {
-    throttle,
-    roll,
-    pitch,
-    yaw
-});
 
 /// Starts every request; matches answers to requests and detects resends (protocol.md §5.0). Every value is
 /// valid: the client counts up with `wrapping_add`.
@@ -172,149 +150,78 @@ pub trait Request: sealed::Sealed {
     fn answer(outcome: Result<(), Failure<Self::Refusal>>) -> Answer;
 }
 
-/// Defines a command whose payload is only its Request ID.
-macro_rules! simple_commands {
-    ($($(#[$meta:meta])* $name:ident,)*) => {$(
-        $(#[$meta])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub struct $name {
-            pub request_id: RequestId,
-        }
-        impl_wire!($name { request_id });
-    )*};
-}
-
-simple_commands! {
-    Arm,
-    Disarm,
-    TakeOff,
-    Land,
-    /// Not supported until GPS is fitted.
-    GoHome,
-    /// Hold still and accept only a few requests.
-    SteadyState,
-    ExitSteadyState,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Flip {
-    pub request_id: RequestId,
-    pub direction: u16, // 0 = forward, clockwise seen from above, a full circle over 0 … 65535
-    pub duration_ms: u16,
-}
-impl_wire!(Flip {
-    request_id,
-    direction,
-    duration_ms
-});
-
-/// Defines `Message` and `Answer` from one list of message types, so a type byte, its message and (for a request)
-/// its Answer can't get out of step.
-macro_rules! messages {
-    (
-        others { $($name:ident = $type:literal,)* }
-        requests { $($request:ident($refusal:ty) = $request_type:literal,)* }
-    ) => {
-        #[allow(clippy::large_enum_variant)] // owned messages are as big as the biggest one, on purpose (protocol.md §7.1)
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub enum Message {
-            $($name($name),)*
-            $($request($request),)*
-        }
-
-        /// What a Reply says, typed per request (protocol.md §5.4), so a Reply can't combine Answers Type, Status
-        /// and Reason in a way the protocol doesn't allow.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub enum Answer {
-            $($request(Result<(), Failure<$refusal>>),)*
-            UnknownType(UnknownType), // always Status "unknown type", never a Reason
-        }
-
-        $(
-            impl sealed::Sealed for $request {}
-
-            impl Request for $request {
-                type Refusal = $refusal;
-
-                fn request_id(&self) -> RequestId {
-                    return self.request_id;
-                }
-
-                fn answer(outcome: Result<(), Failure<$refusal>>) -> Answer {
-                    return Answer::$request(outcome);
-                }
-            }
-        )*
-
-        fn is_known_type(value: u8) -> bool {
-            return matches!(value, $($type)|* | $($request_type)|*);
-        }
-
-        impl Message {
-            fn message_type(&self) -> u8 {
-                return match self {
-                    $(Message::$name(_) => $type,)*
-                    $(Message::$request(_) => $request_type,)*
-                };
-            }
-
-            fn read_payload(message_type: u8, r: &mut Reader) -> Result<Self, MessageError> {
-                return match message_type {
-                    $($type => Ok(Message::$name(Wire::read(r)?)),)*
-                    $($request_type => Ok(Message::$request(Wire::read(r)?)),)*
-                    _ => Err(MessageError::UnknownType(UnknownType(message_type))),
-                };
-            }
-
-            fn write_payload(&self, w: &mut Writer) {
-                match self {
-                    $(Message::$name(m) => m.write(w),)*
-                    $(Message::$request(m) => m.write(w),)*
-                }
-            }
-        }
-
-        impl Answer {
-            /// Answers Type, Status and Reason.
-            pub(crate) fn to_wire(self) -> (u8, (Status, u16)) {
-                return match self {
-                    $(Answer::$request(outcome) => ($request_type, outcome_to_wire(outcome)),)*
-                    Answer::UnknownType(unknown) => (unknown.0, (Status::UnknownType, 0)),
-                };
-            }
-
-            pub(crate) fn from_wire(answers: u8, status: Status, reason: u16) -> Result<Self, MessageError> {
-                return match answers {
-                    $($request_type => Ok(Answer::$request(outcome_from_wire(status, reason)?)),)*
-                    _ => match (UnknownType::new(answers), status, reason) {
-                        (Some(unknown), Status::UnknownType, 0) => Ok(Answer::UnknownType(unknown)),
-                        _ => Err(MessageError::InvalidValue), // not a request, or not answered "unknown type"
-                    },
-                };
-            }
-        }
-    };
-}
-
 messages! {
     others {
-        Hello = 0x01,
-        HelloReply = 0x02,
-        Ping = 0x03,
-        Pong = 0x04,
+        Hello = 0x01 {
+            protocol_version: u8,
+            options: Options,
+        },
+        HelloReply = 0x02 {
+            protocol_version: u8,
+            result: HelloResult,
+            options: Options,
+        },
+        Ping = 0x03 { timestamp: u32 },
+        Pong = 0x04 {
+            ping_time: u32,
+            receive_time: u32,
+            send_time: u32,
+        },
         Sticks = 0x10,
         Reply = 0x40,
         Event = 0x41,
     }
     requests {
-        Arm(ArmRefusal) = 0x20,
-        Disarm(Infallible) = 0x21, // never refused: disarming must always work
-        TakeOff(TakeOffRefusal) = 0x22,
-        Land(LandRefusal) = 0x23,
-        GoHome(Infallible) = 0x24, // "not supported" until GPS is fitted
-        Flip(FlipRefusal) = 0x25,
-        SteadyState(SteadyStateRefusal) = 0x26,
-        ExitSteadyState(Infallible) = 0x27,
+        Arm = 0x20 {} refused ArmRefusal {
+            ThrottleNotLow = 1,
+            ImuNotReady = 2,
+            BatteryLow = 3,
+        },
+        /// Never refused: disarming must always work.
+        Disarm = 0x21 {},
+        TakeOff = 0x22 {} refused TakeOffRefusal {
+            NotArmed = 1,
+            BatteryLow = 2,
+        },
+        Land = 0x23 {} refused LandRefusal { NotFlying = 1 },
+        /// "Not supported" until GPS is fitted.
+        GoHome = 0x24 {},
+        Flip = 0x25 {
+            direction: u16, // 0 = forward, clockwise seen from above, a full circle over 0 … 65535
+            duration_ms: u16,
+        } refused FlipRefusal {
+            NotArmed = 1,
+            NotFlying = 2,
+            TooLow = 3,
+        },
+        /// Hold still and accept only a few requests.
+        SteadyState = 0x26 {} refused SteadyStateRefusal { NotFlying = 1 },
+        ExitSteadyState = 0x27 {},
+    }
+}
+
+impl Answer {
+    pub(crate) fn from_wire(answers: u8, status: Status, reason: u16) -> Result<Self, MessageError> {
+        return match (RequestType::from_type_byte(answers), status, reason) {
+            (Some(request), Status::Malformed, 0) => Ok(Answer::Malformed(request)),
+            (Some(request), _, _) => request.answer(status, reason),
+            (None, Status::UnknownType, 0) => UnknownType::new(answers)
+                .map(Answer::UnknownType)
+                .ok_or(MessageError::InvalidValue), // a known type that isn't a request
+            (None, _, _) => Err(MessageError::InvalidValue),
+        };
+    }
+
+    /// The answer to a packet `Message::decode` rejected; `None` if it isn't a request (protocol.md §5.4).
+    pub(crate) fn to_invalid(message_type: u8) -> Option<Self> {
+        return match (
+            RequestType::from_type_byte(message_type),
+            UnknownType::new(message_type),
+        ) {
+            (Some(request), _) => Some(Answer::Malformed(request)),
+            (None, Some(unknown)) => Some(Answer::UnknownType(unknown)),
+            (None, None) => None,
+        };
     }
 }
 

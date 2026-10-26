@@ -1,6 +1,5 @@
 mod support;
 
-use drone_common::wire::codes::{EventLevel, FailsafeCause};
 use drone_common::wire::event::*;
 use drone_common::wire::message::{Message, MessageError};
 use support::*;
@@ -87,6 +86,34 @@ fn text_is_never_empty_and_at_most_246_bytes() {
     check(event, &[[1, 0, 0].as_slice(), longest.as_bytes()].concat());
     assert_eq!(EventText::new(&"x".repeat(MAX_EVENT_TEXT_LEN + 1)), None);
     assert_eq!(EventText::new(""), None);
+}
+
+#[test]
+fn event_text_is_used_like_a_str() {
+    let text = EventText::new("battery low").unwrap();
+    assert!(text.starts_with("battery"));
+    assert_eq!(text.len(), 11);
+    assert_eq!(&*text, "battery low");
+    assert_eq!(text.to_string(), "battery low");
+    assert_eq!(format!("[{:>5}]", EventText::new("ab").unwrap()), "[   ab]");
+}
+
+#[test]
+fn event_text_is_formatted_without_a_heap() {
+    let cell = 3;
+    let text = EventText::format(format_args!("cell {cell} at {:.1} V", 3.35)).unwrap();
+    assert_eq!(&*text, "cell 3 at 3.4 V");
+    let too_long = "x".repeat(MAX_EVENT_TEXT_LEN + 1);
+    assert_eq!(EventText::format(format_args!("{too_long}")), None);
+    assert_eq!(EventText::format(format_args!("")), None);
+    let exactly_max = "x".repeat(MAX_EVENT_TEXT_LEN);
+    assert_eq!(
+        EventText::format(format_args!("{exactly_max}")).map(|t| return t.len()),
+        Some(MAX_EVENT_TEXT_LEN)
+    );
+    // The first part fits, the second doesn't: no half-written text comes out.
+    let (first, second) = ("x".repeat(240), "y".repeat(10));
+    assert_eq!(EventText::format(format_args!("{first}{second}")), None);
 }
 
 #[test]

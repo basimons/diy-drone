@@ -23,6 +23,7 @@ Message  ⇄  Packet  ⇄  frame (byte streams only)
 ```rust
 use drone_common::wire::message::{Message, Ping};
 use drone_common::wire::packet::{MAX_PACKET_LEN, Packet};
+use drone_common::wire::reply::Reply;
 use drone_common::wire::stream::{self, MAX_FRAME_LEN, StreamDecoder};
 
 // Illustrative: `socket`, `port`, `handle`, … are yours. Both error types implement `core::error::Error`,
@@ -46,19 +47,18 @@ while let Some(result) = decoder.next_packet(&mut chunk) {
     let Ok(packet) = result else { continue };     // count the PacketError
     match Message::decode(&packet) {
         Ok(message) => handle(packet.sequence(), message),
-        Err(error) => answer(&packet, error),      // the packet is still there for the Reply
+        Err(error) => reject(error, Reply::to_invalid(&packet)), // "malformed" / "unknown type", or None
     }
 }
 ```
 
 | Module | Public items | What it is |
 |--------|--------------|------------|
-| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Arm`, `Flip`, …), `Request`, `RequestId`, `Answer`, `UnknownType`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode` |
-| `wire::reply` | `Reply`, `Failure` | The drone's answer to a request, typed per request: only combinations the protocol allows can be built. `Reply::to(&request, outcome)` takes the Request ID and type from the request |
-| `wire::event` | `Event`, one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `Text`, `EventKind` | What the drone reports on its own; each event holds only its own data |
+| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Arm`, `Flip`, …), `HelloResult`, the refusal codes (`ArmRefusal`, …), `Request`, `RequestId`, `Answer`, `RequestType`, `UnknownType`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode`. Each message is defined once, in one list |
+| `wire::reply` | `Reply`, `Failure` | The drone's answer to a request, typed per request: only combinations the protocol allows can be built. `Reply::to(&request, outcome)` takes the Request ID and type from the request; `Reply::to_invalid(&packet)` answers a packet that didn't decode |
+| `wire::event` | `Event`, one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `EventLevel`, `FailsafeCause`, `Text`, `EventText`, `EventKind` | What the drone reports on its own; each event holds only its own data. `EventText` is a string without heap: use it like a `&str`, build it with `EventText::format(format_args!(…))` |
 | `wire::packet` | `Packet`, `PacketError`, `MAX_PACKET_LEN` | A checked packet: `parse`, `sequence`, `as_bytes` |
 | `wire::stream` | `encode`, `StreamDecoder`, `MAX_FRAME_LEN` | COBS framing; only needed on byte streams |
-| `wire::codes` | `HelloResult`, `EventLevel`, `FailsafeCause`, `ArmRefusal` (one refusal enum per request), … | The numeric codes used inside messages. Each holds only the protocol's values, so whatever you build can be sent; an unknown number fails decoding with `MessageError::UnknownCode` |
 | `domain` | `Sticks`, `ArmState`, `RcChannels` | Protocol-neutral state: what the sticks say, armed or not |
 | `crsf` | CRSF constants and CRC-8 | CRSF (Crossfire), the radio protocol between the ELRS receiver and the FC |
 
