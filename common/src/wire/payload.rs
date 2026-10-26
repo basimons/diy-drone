@@ -40,8 +40,7 @@ impl Code for Infallible {
 
     /// Like the refusal enums: an unknown number is unknown, a known `Reason` is invalid here.
     fn from_repr(value: u16) -> Result<Self, MessageError> {
-        Reason::from_repr(value)?;
-        return Err(MessageError::InvalidValue);
+        return Reason::from_repr(value).and(Err(MessageError::InvalidValue));
     }
 
     fn repr(self) -> u16 {

@@ -1,16 +1,11 @@
 //! Reply (protocol.md §5.4): the drone's answer to a request, typed per request.
 
 use crate::wire::macros::code;
-use crate::wire::message::{Answer, Message, MessageError, Request, RequestId};
+use crate::wire::message::{Answer, Message, MessageError, Request, RequestId, TypeKind};
 use crate::wire::packet::Packet;
 use crate::wire::payload::{Code, Reader, Wire, Writer};
 
-/// The drone's answer to a request (protocol.md §5.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Reply {
-    pub request_id: RequestId,
-    pub answer: Answer,
-}
+pub use crate::wire::message::Reply;
 
 impl Reply {
     /// The Reply to `request`: its Request ID and type come from the request, so they can't be mixed up.
@@ -26,11 +21,16 @@ impl Reply {
     /// Drone side only: the client never sends Replies.
     pub fn to_invalid(packet: &Packet) -> Option<Self> {
         if Message::decode(packet).is_ok() {
-            return None;
+            return None; // a valid request never gets "malformed"
         }
+        let answer = match TypeKind::of(packet.message_type()) {
+            TypeKind::Request(request) => Answer::Malformed(request),
+            TypeKind::Unknown(unknown) => Answer::UnknownType(unknown),
+            TypeKind::Other => return None, // not a request: nothing to answer
+        };
         return Some(Self {
             request_id: RequestId::read(&mut Reader::new(packet.payload())).ok()?,
-            answer: Answer::to_invalid(packet.message_type())?,
+            answer,
         });
     }
 }
@@ -48,14 +48,16 @@ pub enum Outcome<R> {
 
 impl<R: Code<Repr = u16>> Outcome<R> {
     /// Status and Reason.
-    pub(crate) fn to_wire(self) -> (Status, u16) {
-        return match self {
+    pub(crate) fn write(self, w: &mut Writer) {
+        let (status, reason) = match self {
             Outcome::Ok => (Status::Ok, 0),
             Outcome::Refused(refusal) => (Status::Refused, refusal.repr()),
             Outcome::NotSupported => (Status::NotSupported, 0),
             Outcome::Busy => (Status::Busy, 0),
             Outcome::NotAllowedNow => (Status::NotAllowedNow, 0),
         };
+        status.write(w);
+        reason.write(w);
     }
 
     /// Only a refusal has a Reason, and then never 0.
@@ -98,20 +100,3 @@ code!(
         NotAllowedNow = 6,
     }
 );
-
-impl Wire for Reply {
-    fn read(r: &mut Reader) -> Result<Self, MessageError> {
-        return Ok(Self {
-            request_id: RequestId::read(r)?,
-            answer: Answer::from_wire(u8::read(r)?, Status::read(r)?, u16::read(r)?)?,
-        });
-    }
-
-    fn write(&self, w: &mut Writer) {
-        let (answers, (status, reason)) = self.answer.to_wire();
-        self.request_id.write(w);
-        answers.write(w);
-        status.write(w);
-        reason.write(w);
-    }
-}

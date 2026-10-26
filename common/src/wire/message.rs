@@ -4,13 +4,13 @@ use crate::wire::event::Event;
 use crate::wire::macros::{code, messages};
 use crate::wire::packet::{MAX_PACKET_LEN, Packet};
 use crate::wire::payload::{Code, Reader, Wire, Writer};
-use crate::wire::reply::{Outcome, Reason, Reply, Status};
+use crate::wire::reply::{Outcome, Reason, Status};
 
 /// Why an intact packet is not a valid message. Unlike a `PacketError`, the sender can be told (protocol.md §5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MessageError {
     UnknownType(UnknownType),
-    UnknownCode { kind: &'static str, value: u16 }, // e.g. kind "ArmRefusal": a value that code doesn't have
+    UnknownCode { kind: &'static str, value: u16 }, // e.g. kind "HelloResult": a value that code doesn't have
     WrongLength,                                    // payload length doesn't match the message type
     InvalidValue,                                   // a field holds a value the protocol doesn't allow
 }
@@ -36,7 +36,10 @@ pub struct UnknownType(u8);
 impl UnknownType {
     /// `None` if `value` is a message type this build knows.
     pub fn new(value: u8) -> Option<Self> {
-        return if is_known_type(value) { None } else { Some(Self(value)) };
+        return match TypeKind::of(value) {
+            TypeKind::Unknown(unknown) => Some(unknown),
+            TypeKind::Request(_) | TypeKind::Other => None,
+        };
     }
 
     pub fn value(self) -> u8 {
@@ -156,7 +159,11 @@ messages! {
             pitch: i16,
             yaw: i16,
         },
-        Reply = 0x40,
+        /// The drone's answer to a request (protocol.md §5.4).
+        Reply = 0x40 {
+            request_id: RequestId,
+            answer: Answer,
+        },
         Event = 0x41,
     }
     requests {
@@ -179,26 +186,17 @@ messages! {
 }
 
 impl Answer {
-    pub(crate) fn from_wire(answers: u8, status: Status, reason: u16) -> Result<Self, MessageError> {
-        return match (RequestType::from_type_byte(answers), status, reason) {
-            (Some(request), Status::Malformed, 0) => Ok(Answer::Malformed(request)),
-            (Some(request), _, _) => request.answer(status, reason),
-            (None, Status::UnknownType, 0) => UnknownType::new(answers)
-                .map(Answer::UnknownType)
-                .ok_or(MessageError::InvalidValue), // a known type that isn't a request
-            (None, _, _) => Err(MessageError::InvalidValue),
-        };
-    }
-
-    /// The answer to a packet `Message::decode` rejected; `None` if it isn't a request (protocol.md §5.4).
-    pub(crate) fn to_invalid(message_type: u8) -> Option<Self> {
-        return match (
-            RequestType::from_type_byte(message_type),
-            UnknownType::new(message_type),
-        ) {
-            (Some(request), _) => Some(Answer::Malformed(request)),
-            (None, Some(unknown)) => Some(Answer::UnknownType(unknown)),
-            (None, None) => None,
+    fn from_wire(answers: u8, status: Status, reason: u16) -> Result<Self, MessageError> {
+        return match TypeKind::of(answers) {
+            TypeKind::Request(request) => match (status, reason) {
+                (Status::Malformed, 0) => Ok(Answer::Malformed(request)),
+                _ => request.outcome(status, reason),
+            },
+            TypeKind::Unknown(unknown) => match (status, reason) {
+                (Status::UnknownType, 0) => Ok(Answer::UnknownType(unknown)),
+                _ => Err(MessageError::InvalidValue),
+            },
+            TypeKind::Other => Err(MessageError::InvalidValue), // a known type that isn't a request
         };
     }
 }

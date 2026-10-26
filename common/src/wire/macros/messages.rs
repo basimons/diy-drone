@@ -45,13 +45,11 @@ macro_rules! messages {
                 impl Code for $refusal {
                     type Repr = u16;
 
-                    /// A known `Reason` this request can't have is invalid, not unknown.
                     fn from_repr(value: u16) -> Result<Self, MessageError> {
-                        Reason::from_repr(value)?;
-                        return [$($refusal::$reason),*]
-                            .into_iter()
-                            .find(|refusal| return *refusal as u16 == value)
-                            .ok_or(MessageError::InvalidValue);
+                        return match Reason::from_repr(value)? {
+                            $(Reason::$reason => Ok($refusal::$reason),)*
+                            _ => Err(MessageError::InvalidValue), // a Reason this request is never refused for
+                        };
                     }
 
                     fn repr(self) -> u16 {
@@ -97,8 +95,21 @@ macro_rules! messages {
             UnknownType(UnknownType), // always Status "unknown type", never a Reason
         }
 
-        fn is_known_type(value: u8) -> bool {
-            return matches!(value, $($type)|* | $($request_type)|*);
+        /// What a message type byte stands for.
+        pub(crate) enum TypeKind {
+            Request(RequestType),
+            Other, // a known message that isn't a request
+            Unknown(UnknownType),
+        }
+
+        impl TypeKind {
+            pub(crate) fn of(value: u8) -> Self {
+                return match value {
+                    $($request_type => TypeKind::Request(RequestType::$request),)*
+                    $($type)|* => TypeKind::Other,
+                    _ => TypeKind::Unknown(UnknownType(value)),
+                };
+            }
         }
 
         impl Message {
@@ -126,35 +137,43 @@ macro_rules! messages {
         }
 
         impl RequestType {
-            fn from_type_byte(value: u8) -> Option<Self> {
-                return match value {
-                    $($request_type => Some(RequestType::$request),)*
-                    _ => None,
-                };
-            }
-
             fn type_byte(self) -> u8 {
                 return match self {
                     $(RequestType::$request => $request_type,)*
                 };
             }
 
-            /// The Answer of this request with this Status and Reason.
-            fn answer(self, status: Status, reason: u16) -> Result<Answer, MessageError> {
+            /// This request's own Outcome.
+            fn outcome(self, status: Status, reason: u16) -> Result<Answer, MessageError> {
                 return match self {
                     $(RequestType::$request => Ok(Answer::$request(Outcome::from_wire(status, reason)?)),)*
                 };
             }
         }
 
-        impl Answer {
-            /// Answers Type, Status and Reason.
-            pub(crate) fn to_wire(self) -> (u8, (Status, u16)) {
-                return match self {
-                    $(Answer::$request(outcome) => ($request_type, outcome.to_wire()),)*
-                    Answer::Malformed(request) => (request.type_byte(), (Status::Malformed, 0)),
-                    Answer::UnknownType(unknown) => (unknown.0, (Status::UnknownType, 0)),
-                };
+        /// Answers Type, Status and Reason.
+        impl Wire for Answer {
+            fn read(r: &mut Reader) -> Result<Self, MessageError> {
+                return Answer::from_wire(u8::read(r)?, Status::read(r)?, u16::read(r)?);
+            }
+
+            fn write(&self, w: &mut Writer) {
+                match *self {
+                    $(Answer::$request(outcome) => {
+                        u8::write(&$request_type, w);
+                        outcome.write(w);
+                    })*
+                    Answer::Malformed(request) => {
+                        request.type_byte().write(w);
+                        Status::Malformed.write(w);
+                        0u16.write(w);
+                    }
+                    Answer::UnknownType(unknown) => {
+                        unknown.0.write(w);
+                        Status::UnknownType.write(w);
+                        0u16.write(w);
+                    }
+                }
             }
         }
     };

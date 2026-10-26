@@ -33,10 +33,10 @@ fn message_errors_print_readably() {
         ),
         (
             MessageError::UnknownCode {
-                kind: "ArmRefusal",
+                kind: "HelloResult",
                 value: 9,
             },
-            "unknown ArmRefusal 9",
+            "unknown HelloResult 9",
         ),
         (
             MessageError::WrongLength,
