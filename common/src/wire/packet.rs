@@ -20,6 +20,21 @@ pub enum PacketError {
     UnsupportedFlags, // only allowed once authentication exists
 }
 
+impl core::fmt::Display for PacketError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let text = match self {
+            PacketError::TooShort => "packet shorter than 6 bytes",
+            PacketError::TooLong => "packet longer than 255 bytes",
+            PacketError::BadCobs => "broken COBS framing",
+            PacketError::BadCrc => "CRC-16 mismatch",
+            PacketError::UnsupportedFlags => "flags set, but authentication is not supported yet",
+        };
+        return f.write_str(text);
+    }
+}
+
+impl core::error::Error for PacketError {}
+
 /// Bytes that passed the length, CRC and flags checks. Made only by `Packet::parse`, `Message::encode` and
 /// `StreamDecoder`, so `Message::decode` never sees unchecked bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

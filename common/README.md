@@ -25,7 +25,8 @@ use drone_common::wire::message::{Message, Ping};
 use drone_common::wire::packet::{MAX_PACKET_LEN, Packet};
 use drone_common::wire::stream::{self, MAX_FRAME_LEN, StreamDecoder};
 
-// Illustrative: `socket`, `port`, `handle`, … are yours, and `?` needs your own error type.
+// Illustrative: `socket`, `port`, `handle`, … are yours. Both error types implement `core::error::Error`,
+// so `?` works with e.g. anyhow.
 let ping = Message::Ping(Ping { timestamp: 1234 });
 let mut buf = [0u8; MAX_PACKET_LEN];
 

@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = []
-# Enables things that need the standard library (e.g. std::error::Error impls).
+# Enables things that need the standard library (nothing yet: the error types use core::error::Error).
 # Off by default so the flight loop can use this crate with no heap allocation.
 std = []
 

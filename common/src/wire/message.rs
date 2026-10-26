@@ -11,6 +11,18 @@ pub enum MessageError {
     InvalidValue, // a field holds a value the protocol doesn't allow
 }
 
+impl core::fmt::Display for MessageError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        return match self {
+            MessageError::UnknownType(byte) => write!(f, "unknown message type {byte:#04x}"),
+            MessageError::WrongLength => f.write_str("payload length doesn't match the message type"),
+            MessageError::InvalidValue => f.write_str("a field holds a value the protocol doesn't allow"),
+        };
+    }
+}
+
+impl core::error::Error for MessageError {}
+
 /// Hello/HelloReply options (protocol.md §5.1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Options {
