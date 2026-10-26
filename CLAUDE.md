@@ -25,6 +25,10 @@ Rust lives in `~/.cargo/bin`, which may not be on `PATH` in a fresh shell (`scri
 - Enum variant comments go on the same line as the variant (`ZeroByte, // encoded data contained 0x00`).
 - Line length is 120 (`rustfmt.toml`).
 - Sequence numbers, Request IDs and session-clock times use `wrapping_add` / `wrapping_sub`, never plain `+`/`-`.
+- Define everything in one place: a type, its fields, its wire code and the names it allows are written once
+  (e.g. a message's struct, type byte and refusal reasons in the `messages!` list). Reuse or re-export instead of
+  defining a second copy (`domain::Sticks` re-exports the Sticks message), and never keep two lists that must
+  stay in step by hand.
 
 ## Crate boundaries (protocol.md §7)
 
