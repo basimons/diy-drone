@@ -41,6 +41,8 @@ fn public_types_are_hashable() {
         key_type::<EventLevel>(),
         key_type::<Answer>(),
         key_type::<RequestType>(),
+        key_type::<Reason>(),
+        key_type::<FlipRefusal>(),
         key_type::<Failure<ArmRefusal>>(),
         key_type::<ArmRefusal>(),
         key_type::<UnknownOptions>(),

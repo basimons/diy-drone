@@ -40,11 +40,5 @@ pub enum ArmState {
     Armed,
 }
 
-/// Stick positions, protocol-neutral (protocol.md §5.2). What they mean is up to the flight code.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Sticks {
-    pub throttle: u16, // 0 … 65535, no centre
-    pub roll: i16,     // 0 = centred
-    pub pitch: i16,
-    pub yaw: i16,
-}
+/// Stick positions (protocol.md §5.2). Defined with the messages, since the Sticks message is exactly this.
+pub use crate::wire::message::Sticks;

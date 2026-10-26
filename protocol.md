@@ -391,33 +391,54 @@ where:
 - **Request ID (RID):** 2 bytes, u16. The request this answers.
 - **Answers Type (AT):** 1 byte. The Type of that request.
 - **Status (St):** 1 byte. One of: 0 = OK, 1 = refused, 2 = unknown type, 3 = malformed, 4 = not supported, 5 = busy, 6 = not allowed now (allowed in general, but not in the drone's current state, e.g. in steady state).
-- **Reason (Rsn):** 2 bytes, u16. Only with Status refused, and then never 0: why the request was refused. Reason codes are numbered **per request type** (the Answers Type says which table applies). Every other Status has Reason 0.
+- **Reason (Rsn):** 2 bytes, u16. Only with Status refused, and then never 0: why the request was refused, from the table below. Each reason has **one number for all requests**, but each request may only use the reasons listed for it. Every other Status has Reason 0.
+
+| Reason | Meaning |
+|--------|---------|
+| 1 | not armed |
+| 2 | not flying |
+| 3 | too low |
+| 4 | battery low |
+| 5 | throttle not low |
+| 6 | IMU (motion sensor) not ready |
+| 7 | arm switch off: the transmitter's arm switch is not in the armed position |
+| 8 | unknown group |
+| 9 | value out of range |
+| 10 | unknown stream |
+| 11 | rate not possible |
+| 12 | unknown log |
+| 13 | offset past the end |
+
+`drone-common` adds a reason together with the first request that uses it.
 
 What a Reply may say depends on the request:
 
 | Request | Success | Refusal reasons |
 |---------|---------|-----------------|
-| Arm | Reply OK | 1 = throttle not low, 2 = IMU (motion sensor) not ready, 3 = battery low |
+| Arm | Reply OK | 4 battery low, 5 throttle not low, 6 IMU not ready, 7 arm switch off |
 | Disarm | Reply OK | never refused: disarming must always work |
-| TakeOff | Reply OK | 1 = not armed, 2 = battery low |
-| Land | Reply OK | 1 = not flying |
+| TakeOff | Reply OK | 1 not armed, 4 battery low |
+| Land | Reply OK | 2 not flying |
 | GoHome | Reply OK | none yet ("not supported" until GPS is fitted) |
-| Flip | Reply OK | 1 = not armed, 2 = not flying, 3 = too low |
-| SteadyState | Reply OK | 1 = not flying |
+| Flip | Reply OK | 1 not armed, 2 not flying, 3 too low |
+| SteadyState | Reply OK | 2 not flying |
 | ExitSteadyState | Reply OK | never refused |
-| SetSettings | Reply OK | 1 = unknown group, 2 = value out of range |
-| Subscribe | Reply OK | 1 = unknown stream, 2 = rate not possible |
-| LinkTest | LinkTestResult, never Reply OK | 1 = not allowed now |
-| GetSettings | Settings, never Reply OK | 1 = unknown group |
-| RequestOnce | StreamData, never Reply OK | 1 = unknown stream |
+| SetSettings | Reply OK | 8 unknown group, 9 value out of range |
+| Subscribe | Reply OK | 10 unknown stream, 11 rate not possible |
+| LinkTest | LinkTestResult, never Reply OK | none (e.g. while flying: Status "not allowed now") |
+| GetSettings | Settings, never Reply OK | 8 unknown group |
+| RequestOnce | StreamData, never Reply OK | 10 unknown stream |
 | ListLogs | LogList, never Reply OK | none |
-| ReadLog | LogChunk, never Reply OK | 1 = unknown log, 2 = offset past the end |
+| ReadLog | LogChunk, never Reply OK | 12 unknown log, 13 offset past the end |
+
+Arm is only accepted while the transmitter's arm switch is on (drone-design.md, "Failsafes"), so a client bug or a stray message can't start the motors on its own.
 
 Rules:
 
 - Status unknown type (2) only answers a Type the drone doesn't know, always with Reason 0. A known Type is never answered with it.
 - Status malformed (3) answers a request that didn't decode (e.g. wrong length), always with Reason 0. A malformed message that isn't a request (e.g. Sticks) gets no Reply.
 - For unknown type and malformed, the Request ID is the first 2 bytes of the payload. A payload shorter than that can't be answered and gets no Reply.
+- A Reason the request may not use (e.g. Flip refused with 5 throttle not low) is invalid.
 - Any other combination is invalid: OK to a request whose success is a data message, OK or busy with a Reason, refused without one, refused for a request that is never refused, an Answers Type that is not a request (e.g. Sticks).
 - A Status or Reason the receiver doesn't know makes the Reply invalid. Both sides passed Hello with the same protocol version, so they know the same codes (§2).
 
@@ -806,7 +827,7 @@ common/src/
 ```
 
 - The **internal state** types the adapters produce (sticks, pending command, settings changes, link health). They are protocol-neutral: CRSF units (172–1811) only exist inside `crsf.rs`, which converts them.
-- A Rust type for every message in §5 with encode/decode. Messages are shaped like the wire; where a message *is* a domain concept (Sticks), it holds the domain type instead of a copy of it.
+- A Rust type for every message in §5 with encode/decode. Messages are shaped like the wire; where a message *is* a domain concept (Sticks), there is one type: it is defined with the messages and `domain` re-exports it.
 - Three layers, each with its own type, so the compiler keeps them apart:
   - `Message::encode(sequence, buf) -> Packet` and `Message::decode(&Packet) -> Result<Message, MessageError>`.
   - `Packet::parse(bytes) -> Result<Packet, PacketError>` checks length, CRC and flags. A `Packet` can only exist after those checks, so `Message::decode` never sees unchecked bytes. UDP uses this directly.

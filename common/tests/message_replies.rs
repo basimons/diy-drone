@@ -3,7 +3,7 @@ mod support;
 use core::convert::Infallible;
 use drone_common::wire::message::*;
 use drone_common::wire::packet::Packet;
-use drone_common::wire::reply::{Failure, Reply};
+use drone_common::wire::reply::{Failure, Reason, Reply};
 use support::*;
 
 const REPLY: u8 = 0x40;
@@ -49,24 +49,45 @@ fn every_refusal_with_its_reason() {
         return Answer::Flip(Err(Failure::Refused(r)));
     }
     let cases = [
-        (arm(ArmRefusal::ThrottleNotLow), 0x20, 1),
-        (arm(ArmRefusal::ImuNotReady), 0x20, 2),
-        (arm(ArmRefusal::BatteryLow), 0x20, 3),
+        (arm(ArmRefusal::BatteryLow), 0x20, 4),
+        (arm(ArmRefusal::ThrottleNotLow), 0x20, 5),
+        (arm(ArmRefusal::ImuNotReady), 0x20, 6),
+        (arm(ArmRefusal::ArmSwitchOff), 0x20, 7),
         (take_off(TakeOffRefusal::NotArmed), 0x22, 1),
-        (take_off(TakeOffRefusal::BatteryLow), 0x22, 2),
-        (Answer::Land(Err(Failure::Refused(LandRefusal::NotFlying))), 0x23, 1),
+        (take_off(TakeOffRefusal::BatteryLow), 0x22, 4),
+        (Answer::Land(Err(Failure::Refused(LandRefusal::NotFlying))), 0x23, 2),
         (flip(FlipRefusal::NotArmed), 0x25, 1),
         (flip(FlipRefusal::NotFlying), 0x25, 2),
         (flip(FlipRefusal::TooLow), 0x25, 3),
         (
             Answer::SteadyState(Err(Failure::Refused(SteadyStateRefusal::NotFlying))),
             0x26,
-            1,
+            2,
         ),
     ];
     for (answer, answers, reason) in cases {
         check_round_trip(reply(answer), REPLY, &payload(answers, 1, reason));
     }
+}
+
+#[test]
+fn a_reason_has_one_number_for_every_request() {
+    // protocol.md §5.4: one table of reasons; each request may use only some of them.
+    assert_eq!(Reason::from(TakeOffRefusal::NotArmed), Reason::NotArmed);
+    assert_eq!(Reason::from(FlipRefusal::NotArmed), Reason::NotArmed);
+    assert_eq!(
+        Reason::from(ArmRefusal::BatteryLow),
+        Reason::from(TakeOffRefusal::BatteryLow)
+    );
+    assert_eq!(Reason::from(ArmRefusal::ArmSwitchOff), Reason::ArmSwitchOff);
+    assert_eq!(
+        Reason::from(LandRefusal::NotFlying),
+        Reason::from(SteadyStateRefusal::NotFlying)
+    );
+    let take_off = reply(Answer::TakeOff(Err(Failure::Refused(TakeOffRefusal::NotArmed))));
+    let flip = reply(Answer::Flip(Err(Failure::Refused(FlipRefusal::NotArmed))));
+    check_round_trip(take_off, REPLY, &payload(0x22, 1, 1));
+    check_round_trip(flip, REPLY, &payload(0x25, 1, 1));
 }
 
 #[test]
@@ -188,10 +209,11 @@ fn request_id_0_is_valid() {
 fn rejects_unknown_codes() {
     // The protocol version is bumped when codes are added, so after Hello an unknown code is an error.
     let unknown_reason = MessageError::UnknownCode {
-        kind: "ArmRefusal",
-        value: 9,
+        kind: "Reason",
+        value: 0x0999,
     };
-    assert_eq!(decode_payload(REPLY, &payload(0x20, 1, 9)), Err(unknown_reason));
+    assert_eq!(decode_payload(REPLY, &payload(0x20, 1, 0x0999)), Err(unknown_reason));
+    assert_eq!(decode_payload(REPLY, &payload(0x21, 1, 0x0999)), Err(unknown_reason)); // Disarm
     let unknown_status = MessageError::UnknownCode {
         kind: "Status",
         value: 9,
@@ -211,6 +233,8 @@ fn rejects_impossible_combinations() {
         ("Not supported with a reason", payload(0x20, 4, 1)),
         ("Not allowed now with a reason", payload(0x25, 6, 1)),
         ("Disarm refused", payload(0x21, 1, 1)),
+        ("Flip refused because the throttle is not low", payload(0x25, 1, 5)),
+        ("Arm refused because it is not armed", payload(0x20, 1, 1)),
         ("GoHome refused", payload(0x24, 1, 1)),
         ("ExitSteadyState refused", payload(0x27, 1, 1)),
         ("unknown type for a known request", payload(0x20, 2, 0)),

@@ -107,11 +107,11 @@ for a type this build doesn't know (protocol.md §5.4).
 | Module | Public items | What it is |
 |--------|--------------|------------|
 | `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Arm`, `Flip`, …), `HelloResult`, the refusal codes (`ArmRefusal`, …), `Request`, `RequestId`, `Answer`, `RequestType`, `UnknownType`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode`. Each message is defined once, in one list |
-| `wire::reply` | `Reply`, `Failure` | The drone's answer to a request, typed per request: only combinations the protocol allows can be built. `Reply::to(&request, outcome)` takes the Request ID and type from the request; `Reply::to_invalid(&packet)` answers a packet that didn't decode |
+| `wire::reply` | `Reply`, `Failure`, `Reason` | The drone's answer to a request, typed per request: only combinations the protocol allows can be built. Every refusal enum (`FlipRefusal`, …) converts into the shared `Reason`, so the client can handle any refusal in one place. `Reply::to(&request, outcome)` takes the Request ID and type from the request; `Reply::to_invalid(&packet)` answers a packet that didn't decode |
 | `wire::event` | `Event`, one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `EventLevel`, `FailsafeCause`, `Text`, `EventText`, `EventKind` | What the drone reports on its own; each event holds only its own data. `EventText` is a string without heap: use it like a `&str`, build it with `EventText::format(format_args!(…))` |
 | `wire::packet` | `Packet`, `PacketError`, `MAX_PACKET_LEN` | A checked packet: `parse`, `sequence`, `as_bytes` |
 | `wire::stream` | `encode`, `StreamDecoder`, `MAX_FRAME_LEN` | COBS framing; only needed on byte streams |
-| `domain` | `Sticks`, `ArmState`, `RcChannels` | Protocol-neutral state: what the sticks say, armed or not |
+| `domain` | `Sticks` (the Sticks message, re-exported), `ArmState`, `RcChannels` | Protocol-neutral state: what the sticks say, armed or not |
 | `crsf` | CRSF constants and CRC-8 | CRSF (Crossfire), the radio protocol between the ELRS receiver and the FC |
 
 The CRC-16 and COBS code itself is private.

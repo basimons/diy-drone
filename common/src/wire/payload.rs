@@ -5,6 +5,7 @@ use core::convert::Infallible;
 
 use crate::wire::message::MessageError;
 use crate::wire::packet::MAX_PAYLOAD_LEN;
+use crate::wire::reply::Reason;
 
 /// A value with a fixed place in a payload: reads and writes itself.
 pub trait Wire: Sized {
@@ -37,7 +38,9 @@ impl<C: Code> Wire for C {
 impl Code for Infallible {
     type Repr = u16;
 
-    fn from_repr(_: u16) -> Result<Self, MessageError> {
+    /// Like the refusal enums: an unknown number is unknown, a known `Reason` is invalid here.
+    fn from_repr(value: u16) -> Result<Self, MessageError> {
+        Reason::from_repr(value)?;
         return Err(MessageError::InvalidValue);
     }
 

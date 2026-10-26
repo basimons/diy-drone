@@ -98,7 +98,7 @@ Flight loop rules: `SCHED_FIFO` high priority, `mlockall`, no allocation/syscall
 **Flight modes:** rate (gyro) loop first, then angle (self-level) mode on top for easy flying.
 
 ### Failsafes (built before the first prop goes on)
-- **Arming:** only via the transmitter switch, only with throttle low and a healthy IMU. Disarmed on boot.
+- **Arming:** only while the transmitter's arm switch is on, with throttle low and a healthy IMU. The client can also send Arm, but it is refused unless the switch is on. Disarmed on boot.
 - **RC link loss:** no valid CRSF frame for >250 ms → disarm (later: controlled descent).
 - **Laptop program freeze/crash:** the TX module may keep sending stale values. The laptop program sends a counter on a spare channel that increments every frame; if it stops changing for >250 ms, the Pi treats it as link loss.
 - **Gamepad disconnect:** laptop program detects controller loss and sends disarm.

@@ -1,6 +1,7 @@
-/// Defines every message from one list: its struct (unless it is defined elsewhere, like `Sticks`), its type byte,
+/// Defines every message from one list: its struct (unless it is defined elsewhere, like `Reply`), its type byte,
 /// `Message` over all of them, and for each request its refusal codes, its `Answer` variant and its `RequestType`.
-/// A request's struct starts with its Request ID; one without `refused` is never refused.
+/// A request's struct starts with its Request ID. `refused` lists the `Reason`s it may be refused for, as its own
+/// enum; one without `refused` is never refused.
 macro_rules! messages {
     (@refusal) => { ::core::convert::Infallible };
     (@refusal $refusal:ident) => { $refusal };
@@ -13,7 +14,7 @@ macro_rules! messages {
         requests {
             $(
                 $(#[$request_meta:meta])* $request:ident = $request_type:literal { $($request_fields:tt)* }
-                $(refused $refusal:ident { $($reason:ident = $value:literal),* $(,)? })?,
+                $(refused $refusal:ident { $($reason:ident),* $(,)? })?,
             )*
         }
     ) => {
@@ -26,12 +27,37 @@ macro_rules! messages {
             });
 
             $(
-                const _: () = assert!($($value != 0 &&)* true, "Reason 0 means no reason");
+                #[doc = concat!("The `Reason`s ", stringify!($request), " may be refused for, with their numbers.")]
+                #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+                #[repr(u16)]
+                pub enum $refusal {
+                    $($reason = Reason::$reason as u16,)*
+                }
 
-                $crate::wire::macros::code!(
-                    #[doc = concat!("Why the drone refuses ", stringify!($request), ".")]
-                    pub $refusal: u16 { $($reason = $value,)* }
-                );
+                impl From<$refusal> for Reason {
+                    fn from(refusal: $refusal) -> Reason {
+                        return match refusal {
+                            $($refusal::$reason => Reason::$reason,)*
+                        };
+                    }
+                }
+
+                impl Code for $refusal {
+                    type Repr = u16;
+
+                    /// A known `Reason` this request can't have is invalid, not unknown.
+                    fn from_repr(value: u16) -> Result<Self, MessageError> {
+                        Reason::from_repr(value)?;
+                        return [$($refusal::$reason),*]
+                            .into_iter()
+                            .find(|refusal| return *refusal as u16 == value)
+                            .ok_or(MessageError::InvalidValue);
+                    }
+
+                    fn repr(self) -> u16 {
+                        return self as u16;
+                    }
+                }
             )?
 
             impl sealed::Sealed for $request {}

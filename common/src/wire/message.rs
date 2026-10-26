@@ -1,11 +1,10 @@
 //! The messages of protocol.md §5, as owned Rust types with encode/decode.
 
-use crate::domain::Sticks;
 use crate::wire::event::Event;
 use crate::wire::macros::{code, messages};
 use crate::wire::packet::{MAX_PACKET_LEN, Packet};
 use crate::wire::payload::{Code, Reader, Wire, Writer};
-use crate::wire::reply::{Failure, Reply, Status, outcome_from_wire, outcome_to_wire};
+use crate::wire::reply::{Failure, Reason, Reply, Status, outcome_from_wire, outcome_to_wire};
 
 /// Why an intact packet is not a valid message. Unlike a `PacketError`, the sender can be told (protocol.md §5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -101,24 +100,6 @@ code!(
     }
 );
 
-impl Wire for Sticks {
-    fn read(r: &mut Reader) -> Result<Self, MessageError> {
-        return Ok(Self {
-            throttle: u16::read(r)?,
-            roll: i16::read(r)?,
-            pitch: i16::read(r)?,
-            yaw: i16::read(r)?,
-        });
-    }
-
-    fn write(&self, w: &mut Writer) {
-        self.throttle.write(w);
-        self.roll.write(w);
-        self.pitch.write(w);
-        self.yaw.write(w);
-    }
-}
-
 /// Starts every request; matches answers to requests and detects resends (protocol.md §5.0). Every value is
 /// valid: the client counts up with `wrapping_add`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -167,35 +148,32 @@ messages! {
             receive_time: u32,
             send_time: u32,
         },
-        Sticks = 0x10,
+        /// Stick positions, protocol-neutral (protocol.md §5.2): what they mean is up to the flight code. Also the
+        /// internal state's type, as `domain::Sticks`.
+        Sticks = 0x10 {
+            throttle: u16, // 0 … 65535, no centre
+            roll: i16,     // 0 = centred
+            pitch: i16,
+            yaw: i16,
+        },
         Reply = 0x40,
         Event = 0x41,
     }
     requests {
-        Arm = 0x20 {} refused ArmRefusal {
-            ThrottleNotLow = 1,
-            ImuNotReady = 2,
-            BatteryLow = 3,
-        },
+        /// Accepted only while the transmitter's arm switch is on (drone-design.md, "Failsafes").
+        Arm = 0x20 {} refused ArmRefusal { BatteryLow, ThrottleNotLow, ImuNotReady, ArmSwitchOff },
         /// Never refused: disarming must always work.
         Disarm = 0x21 {},
-        TakeOff = 0x22 {} refused TakeOffRefusal {
-            NotArmed = 1,
-            BatteryLow = 2,
-        },
-        Land = 0x23 {} refused LandRefusal { NotFlying = 1 },
+        TakeOff = 0x22 {} refused TakeOffRefusal { NotArmed, BatteryLow },
+        Land = 0x23 {} refused LandRefusal { NotFlying },
         /// "Not supported" until GPS is fitted.
         GoHome = 0x24 {},
         Flip = 0x25 {
             direction: u16, // 0 = forward, clockwise seen from above, a full circle over 0 … 65535
             duration_ms: u16,
-        } refused FlipRefusal {
-            NotArmed = 1,
-            NotFlying = 2,
-            TooLow = 3,
-        },
+        } refused FlipRefusal { NotArmed, NotFlying, TooLow },
         /// Hold still and accept only a few requests.
-        SteadyState = 0x26 {} refused SteadyStateRefusal { NotFlying = 1 },
+        SteadyState = 0x26 {} refused SteadyStateRefusal { NotFlying },
         ExitSteadyState = 0x27 {},
     }
 }

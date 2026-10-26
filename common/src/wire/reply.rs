@@ -46,6 +46,21 @@ pub enum Failure<R> {
 }
 
 code!(
+    /// Why a request was refused: one table for all requests (protocol.md §5.4). Each request has its own enum
+    /// of the reasons it may use (e.g. `FlipRefusal`), which converts into this one. Never 0: Reason 0 means
+    /// "no reason".
+    pub Reason: u16 {
+        NotArmed = 1,
+        NotFlying = 2,
+        TooLow = 3,
+        BatteryLow = 4,
+        ThrottleNotLow = 5,
+        ImuNotReady = 6, // IMU: the motion sensor
+        ArmSwitchOff = 7, // the transmitter's arm switch is not in the armed position
+    }
+);
+
+code!(
     /// Status byte of a Reply. In Rust a Reply holds an `Answer` instead, which can't combine them wrongly.
     pub(crate) Status: u8 {
         Ok = 0,
