@@ -476,6 +476,7 @@ where:
 | 13 | offset past the end |
 | 14 | too late: the command is older than its expiry (§5.3) |
 | 15 | attitude not ready: no attitude estimate yet, e.g. the accelerometer is not calibrated |
+| 16 | already flying |
 
 Reasons 8–13 belong to requests that `drone-common` doesn't implement yet; it adds a reason together with the first request that uses it.
 
@@ -485,7 +486,7 @@ What a Reply may say depends on the request:
 |---------|---------|-----------------|
 | Arm | Reply OK | 4 battery low, 5 throttle not low, 6 IMU not ready, 7 arm switch off |
 | Disarm | Reply OK | never refused: disarming must always work |
-| TakeOff | Reply OK | 1 not armed, 4 battery low, 14 too late |
+| TakeOff | Reply OK | 1 not armed, 4 battery low, 14 too late, 16 already flying |
 | Land | Reply OK | 2 not flying |
 | GoHome | Reply OK | none yet ("not supported" until GPS is fitted) |
 | Flip | Reply OK | 1 not armed, 2 not flying, 3 too low, 14 too late |

@@ -135,6 +135,7 @@ code!(
         ArmSwitchOff = 7,      // the transmitter's arm switch is not in the armed position
         TooLate = 14,          // the command is older than its expiry (protocol.md §5.3)
         AttitudeNotReady = 15, // no attitude estimate yet, which angle mode needs
+        AlreadyFlying = 16,
     }
 );
 
