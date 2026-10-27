@@ -27,11 +27,21 @@ impl RcChannels {
     }
 }
 
+/// One type for the whole sequence, so "flying but disarmed" can't exist. Ask `is_armed` for "may the motors spin",
+/// not `== ArmedOnGround`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum ArmState {
     #[default]
-    Disarmed,
-    Armed,
+    Disarmed, // motors off
+    ArmedOnGround, // motors may spin
+    Flying,        // in the air; when this starts is up to the flight code
+}
+
+impl ArmState {
+    /// Armed or flying: the motors may spin.
+    pub fn is_armed(self) -> bool {
+        return self != ArmState::Disarmed;
+    }
 }
 
 /// The transmitter's arm switch. Arm is only accepted while it is on (drone-design.md, "Protections").

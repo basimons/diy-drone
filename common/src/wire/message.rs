@@ -213,7 +213,7 @@ messages! {
         Arm = 0x20 {} refused ArmRefusal { BatteryLow, ThrottleNotLow, ImuNotReady, ArmSwitchOff },
         /// Never refused: disarming must always work.
         Disarm = 0x21 {},
-        TakeOff = 0x22 expires {} refused TakeOffRefusal { NotArmed, BatteryLow, TooLate },
+        TakeOff = 0x22 expires {} refused TakeOffRefusal { NotArmed, BatteryLow, TooLate, AlreadyFlying },
         Land = 0x23 {} refused LandRefusal { NotFlying },
         /// "Not supported" until GPS is fitted.
         GoHome = 0x24 {},

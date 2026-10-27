@@ -1,4 +1,6 @@
-use drone_common::domain::{ArmSwitch, BatteryPercent, CHANNEL_COUNT, FlightMode, LinkHealth, RcChannels, Uptime};
+use drone_common::domain::{
+    ArmState, ArmSwitch, BatteryPercent, CHANNEL_COUNT, FlightMode, LinkHealth, RcChannels, Uptime,
+};
 
 #[test]
 fn rc_channels_are_11_bit() {
@@ -7,6 +9,18 @@ fn rc_channels_are_11_bit() {
     let mut too_high = [0; CHANNEL_COUNT];
     too_high[15] = 0x0800;
     assert_eq!(RcChannels::new(too_high), None);
+}
+
+#[test]
+fn the_drone_starts_disarmed() {
+    assert_eq!(ArmState::default(), ArmState::Disarmed);
+}
+
+#[test]
+fn flying_is_armed_too() {
+    assert!(!ArmState::Disarmed.is_armed());
+    assert!(ArmState::ArmedOnGround.is_armed());
+    assert!(ArmState::Flying.is_armed());
 }
 
 #[test]
