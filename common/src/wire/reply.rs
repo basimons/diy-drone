@@ -4,15 +4,36 @@ use crate::wire::macros::code;
 use crate::wire::message::{Answer, Message, MessageError, Request, RequestId, TypeKind};
 use crate::wire::packet::Packet;
 use crate::wire::payload::{Code, Reader, Wire, Writer};
+use core::convert::Infallible;
 
-pub use crate::wire::message::Reply;
+/// The drone's answer to a request (protocol.md §5.4). Only built as the answer to a request (`Reply::to`,
+/// `CommandMessage::reply`) or to a packet that didn't decode (`Reply::to_invalid`), or decoded, so its Answer is
+/// always for the request with its Request ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Reply {
+    request_id: RequestId,
+    answer: Answer,
+}
 
 impl Reply {
+    pub fn request_id(&self) -> RequestId {
+        return self.request_id;
+    }
+
+    pub fn answer(&self) -> Answer {
+        return self.answer;
+    }
+
     /// The Reply to `request`: its Request ID and type come from the request, so they can't be mixed up.
     pub fn to<R: Request>(request: &R, outcome: Outcome<R::Refusal>) -> Self {
+        let answer = R::answer(outcome);
+        debug_assert!(
+            !matches!(answer, Answer::Malformed(_) | Answer::UnknownType(_)),
+            "a request that decoded got {answer:?}"
+        );
         return Self {
             request_id: request.request_id(),
-            answer: R::answer(outcome),
+            answer,
         };
     }
 
@@ -35,6 +56,20 @@ impl Reply {
     }
 }
 
+impl Wire for Reply {
+    fn read(r: &mut Reader) -> Result<Self, MessageError> {
+        return Ok(Self {
+            request_id: RequestId::read(r)?,
+            answer: Answer::read(r)?,
+        });
+    }
+
+    fn write(&self, w: &mut Writer) {
+        self.request_id.write(w);
+        self.answer.write(w);
+    }
+}
+
 /// What came of a request that decoded (protocol.md §5.4). On the wire: the Status, plus the Reason for
 /// `Refused`. A request that didn't decode is `Answer::Malformed` instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -44,6 +79,19 @@ pub enum Outcome<R> {
     NotSupported,
     Busy,
     NotAllowedNow, // allowed in general, but not in the drone's current state (e.g. steady state)
+}
+
+impl Outcome<Infallible> {
+    /// The same outcome for a request that may be refused: without a refusal, it fits every request.
+    pub(crate) fn widen<R>(self) -> Outcome<R> {
+        return match self {
+            Outcome::Ok => Outcome::Ok,
+            Outcome::Refused(never) => match never {},
+            Outcome::NotSupported => Outcome::NotSupported,
+            Outcome::Busy => Outcome::Busy,
+            Outcome::NotAllowedNow => Outcome::NotAllowedNow,
+        };
+    }
 }
 
 impl<R: Code<Repr = u16>> Outcome<R> {

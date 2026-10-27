@@ -60,10 +60,23 @@ pub struct LinkHealth {
     last_heard: Option<Heard>,
 }
 
+/// Only `LinkHealth` builds one, so `fresh` is never after `valid`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Heard {
-    pub valid: Uptime, // the last valid message
-    pub fresh: Uptime, // the last message showing the client is alive; never after `valid`
+    valid: Uptime,
+    fresh: Uptime,
+}
+
+impl Heard {
+    /// The last valid message.
+    pub fn valid(&self) -> Uptime {
+        return self.valid;
+    }
+
+    /// The last message showing the client is alive; never after `valid`.
+    pub fn fresh(&self) -> Uptime {
+        return self.fresh;
+    }
 }
 
 impl LinkHealth {
@@ -100,3 +113,7 @@ impl LinkHealth {
 
 /// Stick positions (protocol.md §5.2). Defined with the messages, since the Sticks message is exactly this.
 pub use crate::wire::message::Sticks;
+
+/// What the pilot asks the drone to do (protocol.md §5.3), whichever protocol it came over. Defined with the messages,
+/// since each command message is this plus its Request ID and Sent At.
+pub use crate::wire::message::Command;

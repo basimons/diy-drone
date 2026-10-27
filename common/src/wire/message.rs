@@ -4,7 +4,7 @@ use crate::wire::event::{EventId, EventKind};
 use crate::wire::macros::{code, messages, wire_struct};
 use crate::wire::packet::{MAX_PACKET_LEN, Packet};
 use crate::wire::payload::{Code, Reader, Wire, Writer};
-use crate::wire::reply::{Outcome, Reason, Status};
+use crate::wire::reply::{Outcome, Reason, Reply, Status};
 
 /// Why an intact packet is not a valid message. Unlike a `PacketError`, the sender can be told (protocol.md §5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -160,32 +160,23 @@ messages! {
             pitch: i16,
             yaw: i16,
         },
-        /// The drone's answer to a request (protocol.md §5.4).
-        Reply = 0x40 {
-            request_id: RequestId,
-            answer: Answer,
-        },
+        Reply = 0x40, // in reply.rs: only buildable as the answer to a request
         /// The drone tells the client something happened (protocol.md §5.4).
         Event = 0x41 {
             event_id: EventId,
             kind: EventKind,
         },
     }
-    requests {
+    commands {
         /// Accepted only while the transmitter's arm switch is on (drone-design.md, "Failsafes").
         Arm = 0x20 {} refused ArmRefusal { BatteryLow, ThrottleNotLow, ImuNotReady, ArmSwitchOff },
         /// Never refused: disarming must always work.
         Disarm = 0x21 {},
-        /// Expires: refused as `TooLate` when older than `COMMAND_EXPIRY_US`.
-        TakeOff = 0x22 {
-            sent_at: u32, // client's session clock in µs when the pilot gave the command; a resend keeps it
-        } refused TakeOffRefusal { NotArmed, BatteryLow, TooLate },
+        TakeOff = 0x22 expires {} refused TakeOffRefusal { NotArmed, BatteryLow, TooLate },
         Land = 0x23 {} refused LandRefusal { NotFlying },
         /// "Not supported" until GPS is fitted.
         GoHome = 0x24 {},
-        /// Expires like TakeOff.
-        Flip = 0x25 {
-            sent_at: u32, // like TakeOff
+        Flip = 0x25 expires {
             direction: u16, // 0 = forward, clockwise seen from above, a full circle over 0 … 65535
             duration_ms: u16,
         } refused FlipRefusal { NotArmed, NotFlying, TooLow, TooLate },
