@@ -903,9 +903,9 @@ common/src/
     packet.rs     Packet: checked Flags / Type / Sequence / Payload / (Auth Tag) / CRC; PacketError
     stream.rs     COBS framing for byte streams: stream::encode, StreamDecoder
     message.rs    the list of messages: each message's struct, type byte and (for requests) refusal codes, written once;
-                  enum Message { Hello(..), Sticks(..), Arm(..), ... } + encode / decode; Answer; Request; MessageError;
-                  Command and CommandRequest, generated from the commands in that list
-    reply.rs      building a Reply (its struct is in the message list): Reply::to(&request, outcome),
+                  enum Message { Hello(..), Sticks(..), Command(CommandMessage::Arm(..)), ... } + encode / decode;
+                  Answer; Request; MessageError; Command, generated from the commands in that list
+    reply.rs      Reply, only built as an answer: Reply::to(&request, outcome), CommandMessage::reply(outcome),
                   Reply::to_invalid(&packet) for "malformed" / "unknown type"; Outcome; the shared Reason table
     event.rs      the list of events (Armed, BatteryLow { millivolts }, ...) with code and level, written once, and
                   EventKind over them; EventId; the Event message (ID + EventKind) is in message.rs' list;
@@ -916,7 +916,7 @@ common/src/
 ```
 
 - The **internal state** types the adapters produce (sticks, pending command, settings changes, link health). They are protocol-neutral: CRSF units (172–1811) only exist in `RcChannels` and `crsf.rs`.
-- A Rust type for every message in §5 with encode/decode. Messages are shaped like the wire; where a message *is* a domain concept (Sticks), there is one type: it is defined with the messages and `domain` re-exports it. Commands are generated from the same list: `Command` (e.g. `Command::Flip { direction, duration_ms }`) is a command message without its Request ID and Sent At, so the CRSF adapter can produce one from a switch too. `CommandRequest` is the three together: what `Message::command()` gives and `Message::from` takes.
+- A Rust type for every message in §5 with encode/decode. Messages are shaped like the wire; where a message *is* a domain concept (Sticks), there is one type: it is defined with the messages and `domain` re-exports it. Commands are generated from the same list: `Command` (e.g. `Command::Flip { direction, duration_ms }`) is a command message without its Request ID and Sent At, so the CRSF adapter can produce one from a switch too. `CommandMessage` is the message of one of the commands (`Message::Command` holds one): `CommandMessage::new(request_id, sent_at, command)` builds it, `.command()` gives the `Command` back.
 - Three layers, each with its own type, so the compiler keeps them apart:
   - `Message::encode(sequence, buf) -> Packet` and `Message::decode(&Packet) -> Result<Message, MessageError>`.
   - `Packet::parse(bytes) -> Result<Packet, PacketError>` checks length, CRC and flags. A `Packet` can only exist after those checks, so `Message::decode` never sees unchecked bytes. UDP uses this directly.

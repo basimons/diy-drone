@@ -4,7 +4,7 @@ use crate::wire::event::{EventId, EventKind};
 use crate::wire::macros::{code, messages, wire_struct};
 use crate::wire::packet::{MAX_PACKET_LEN, Packet};
 use crate::wire::payload::{Code, Reader, Wire, Writer};
-use crate::wire::reply::{Outcome, Reason, Status};
+use crate::wire::reply::{Outcome, Reason, Reply, Status};
 
 /// Why an intact packet is not a valid message. Unlike a `PacketError`, the sender can be told (protocol.md §5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -113,15 +113,6 @@ wire_struct!(
 /// resending it then too (protocol.md §5.3).
 pub const COMMAND_EXPIRY_US: u32 = 300_000;
 
-/// A command as our protocol sends it: the command message, split into what only our protocol has and the
-/// protocol-neutral `Command`. `Message::from` builds the message, `Message::command` reads it back.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct CommandRequest {
-    pub request_id: RequestId,
-    pub sent_at: u32, // as in the command messages
-    pub command: Command,
-}
-
 mod sealed {
     pub trait Sealed {}
 }
@@ -169,11 +160,7 @@ messages! {
             pitch: i16,
             yaw: i16,
         },
-        /// The drone's answer to a request (protocol.md §5.4).
-        Reply = 0x40 {
-            request_id: RequestId,
-            answer: Answer,
-        },
+        Reply = 0x40, // in reply.rs: only buildable as the answer to a request
         /// The drone tells the client something happened (protocol.md §5.4).
         Event = 0x41 {
             event_id: EventId,

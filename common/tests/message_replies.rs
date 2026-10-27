@@ -8,11 +8,19 @@ use support::*;
 
 const REPLY: u8 = 0x40;
 
-fn reply(answer: Answer) -> Message {
-    return Message::Reply(Reply {
-        request_id: RequestId(0x0102),
-        answer,
-    });
+/// Replies can't be built by hand: decodes `payload`, checks it says `answer` to Request ID 0x0102, and checks it
+/// encodes back to the same bytes.
+fn check_reply(answer: Answer, payload: &[u8]) {
+    let Ok(Message::Reply(reply)) = decode_payload(REPLY, payload) else {
+        panic!("{payload:?} is not a Reply");
+    };
+    assert_eq!((reply.request_id(), reply.answer()), (RequestId(0x0102), answer));
+    check_round_trip(Message::Reply(reply), REPLY, payload);
+}
+
+/// (Request ID, Answer) of a reply, for comparing.
+fn parts(reply: Option<Reply>) -> Option<(RequestId, Answer)> {
+    return reply.map(|reply| return (reply.request_id(), reply.answer()));
 }
 
 /// Reply payload: Request ID 0x0102, then Answers Type, Status, Reason.
@@ -33,7 +41,7 @@ fn every_request_type_can_be_answered_ok() {
         (Answer::ExitSteadyState(Outcome::Ok), 0x27),
     ];
     for (answer, answers) in answers {
-        check_round_trip(reply(answer), REPLY, &payload(answers, 0, 0));
+        check_reply(answer, &payload(answers, 0, 0));
     }
 }
 
@@ -68,7 +76,7 @@ fn every_refusal_with_its_reason() {
         ),
     ];
     for (answer, answers, reason) in cases {
-        check_round_trip(reply(answer), REPLY, &payload(answers, 1, reason));
+        check_reply(answer, &payload(answers, 1, reason));
     }
 }
 
@@ -90,10 +98,14 @@ fn a_reason_has_one_number_for_every_request() {
         Reason::from(LandRefusal::NotFlying),
         Reason::from(SteadyStateRefusal::NotFlying)
     );
-    let take_off = reply(Answer::TakeOff(Outcome::Refused(TakeOffRefusal::NotArmed)));
-    let flip = reply(Answer::Flip(Outcome::Refused(FlipRefusal::NotArmed)));
-    check_round_trip(take_off, REPLY, &payload(0x22, 1, 1));
-    check_round_trip(flip, REPLY, &payload(0x25, 1, 1));
+    check_reply(
+        Answer::TakeOff(Outcome::Refused(TakeOffRefusal::NotArmed)),
+        &payload(0x22, 1, 1),
+    );
+    check_reply(
+        Answer::Flip(Outcome::Refused(FlipRefusal::NotArmed)),
+        &payload(0x25, 1, 1),
+    );
 }
 
 #[test]
@@ -104,13 +116,9 @@ fn failures_without_a_reason() {
         (Outcome::NotAllowedNow, 6), // e.g. in steady state
     ];
     for (failure, status) in cases {
-        check_round_trip(reply(Answer::Disarm(failure)), REPLY, &payload(0x21, status, 0));
-        check_round_trip(reply(Answer::GoHome(failure)), REPLY, &payload(0x24, status, 0));
-        check_round_trip(
-            reply(Answer::ExitSteadyState(failure)),
-            REPLY,
-            &payload(0x27, status, 0),
-        );
+        check_reply(Answer::Disarm(failure), &payload(0x21, status, 0));
+        check_reply(Answer::GoHome(failure), &payload(0x24, status, 0));
+        check_reply(Answer::ExitSteadyState(failure), &payload(0x27, status, 0));
     }
 }
 
@@ -124,23 +132,20 @@ fn reply_to_takes_request_id_and_type_from_the_request() {
     };
     let refused = Outcome::Refused(FlipRefusal::TooLow);
     assert_eq!(
-        Reply::to(&flip, refused),
-        Reply {
-            request_id: RequestId(9),
-            answer: Answer::Flip(refused),
-        }
+        parts(Some(Reply::to(&flip, refused))),
+        Some((RequestId(9), Answer::Flip(refused)))
     );
     let arm = Arm {
         request_id: RequestId(10),
         sent_at: 0,
     };
-    assert_eq!(Reply::to(&arm, Outcome::Ok).answer, Answer::Arm(Outcome::Ok));
+    assert_eq!(Reply::to(&arm, Outcome::Ok).answer(), Answer::Arm(Outcome::Ok));
 }
 
 #[test]
 fn malformed() {
-    check_round_trip(reply(Answer::Malformed(RequestType::Arm)), REPLY, &payload(0x20, 3, 0));
-    check_round_trip(reply(Answer::Malformed(RequestType::Flip)), REPLY, &payload(0x25, 3, 0));
+    check_reply(Answer::Malformed(RequestType::Arm), &payload(0x20, 3, 0));
+    check_reply(Answer::Malformed(RequestType::Flip), &payload(0x25, 3, 0));
 }
 
 /// A packet with this type and payload, as `Packet::parse` gives it.
@@ -151,27 +156,25 @@ fn reply_to_invalid(message_type: u8, sequence: u16, payload: &[u8]) -> Option<R
 
 #[test]
 fn reply_to_a_malformed_request() {
-    let malformed = |id, request_type| {
-        return Some(Reply {
-            request_id: RequestId(id),
-            answer: Answer::Malformed(request_type),
-        });
-    };
-    assert_eq!(reply_to_invalid(0x20, 1, &[5, 0, 9]), malformed(5, RequestType::Arm));
+    let malformed = |id, request_type| return Some((RequestId(id), Answer::Malformed(request_type)));
     assert_eq!(
-        reply_to_invalid(0x25, 1, &[6, 1, 0]),
+        parts(reply_to_invalid(0x20, 1, &[5, 0, 9])),
+        malformed(5, RequestType::Arm)
+    );
+    assert_eq!(
+        parts(reply_to_invalid(0x25, 1, &[6, 1, 0])),
         malformed(0x0106, RequestType::Flip)
     );
-    assert_eq!(reply_to_invalid(0x25, 1, &[6, 1]), malformed(0x0106, RequestType::Flip));
+    assert_eq!(
+        parts(reply_to_invalid(0x25, 1, &[6, 1])),
+        malformed(0x0106, RequestType::Flip)
+    );
 }
 
 #[test]
 fn reply_to_an_unknown_type() {
-    let expected = Reply {
-        request_id: RequestId(7),
-        answer: Answer::UnknownType(UnknownType::new(0xEE).unwrap()),
-    };
-    assert_eq!(reply_to_invalid(0xEE, 1, &[7, 0]), Some(expected));
+    let expected = (RequestId(7), Answer::UnknownType(UnknownType::new(0xEE).unwrap()));
+    assert_eq!(parts(reply_to_invalid(0xEE, 1, &[7, 0])), Some(expected));
 }
 
 #[test]
@@ -192,7 +195,7 @@ fn no_reply_when_there_is_nothing_to_answer() {
 #[test]
 fn unknown_type() {
     let answer = Answer::UnknownType(UnknownType::new(0xEE).unwrap());
-    check_round_trip(reply(answer), REPLY, &payload(0xEE, 2, 0));
+    check_reply(answer, &payload(0xEE, 2, 0));
 }
 
 #[test]
@@ -206,11 +209,15 @@ fn unknown_type_never_holds_a_known_type() {
 
 #[test]
 fn request_id_0_is_valid() {
-    let message = Message::Reply(Reply {
+    let land = Land {
         request_id: RequestId(0),
-        answer: Answer::Land(Outcome::Ok),
-    });
-    check_round_trip(message, REPLY, &[0, 0, 0x23, 0, 0, 0]);
+        sent_at: 0,
+    };
+    check_round_trip(
+        Message::Reply(Reply::to(&land, Outcome::Ok)),
+        REPLY,
+        &[0, 0, 0x23, 0, 0, 0],
+    );
 }
 
 #[test]

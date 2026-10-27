@@ -19,8 +19,6 @@ macro_rules! messages {
             #[doc = ""]
             #[doc = "Expires: refused as `TooLate` when older than `COMMAND_EXPIRY_US` (protocol.md §5.3)."]
         ] $name { $($fields)* });
-
-        const _: <$name as Request>::Refusal = <$name as Request>::Refusal::TooLate;
     };
     (@command_struct [$(#[$meta:meta])*] $name:ident { $($fields:tt)* }) => {
         $crate::wire::macros::wire_struct!($(#[$meta])* $name {
@@ -32,6 +30,12 @@ macro_rules! messages {
     };
     (@expires expires) => { true };
     (@expires) => { false };
+    // Only compiles if an expiring command can be refused as too late. `_message`: unused for commands without fields
+    // or expiry.
+    (@too_late expires $name:ident $message:ident) => {
+        Some(Reply::to(&$message, Outcome::Refused(<$name as Request>::Refusal::TooLate)))
+    };
+    (@too_late $name:ident $message:ident) => { None };
     // Builds `Command` one variant at a time, so a command without fields is a unit variant (`Command::Arm`).
     (@command_enum [$($variants:tt)*]) => {
         /// What the pilot asks the drone to do, whichever protocol it came over (protocol.md §3): a command message
@@ -119,6 +123,12 @@ macro_rules! messages {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum Message {
             $($name($name),)*
+            Command(CommandMessage),
+        }
+
+        /// A command as our protocol sends it: the message of one of the commands. `Message::Command` holds one.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum CommandMessage {
             $($request($request),)*
         }
 
@@ -135,12 +145,68 @@ macro_rules! messages {
             }
         }
 
-        impl From<CommandRequest> for Message {
-            fn from(request: CommandRequest) -> Message {
-                let CommandRequest { request_id, sent_at, command } = request;
-                return match command {
-                    $(Command::$request { $($field),* } => Message::$request($request { request_id, sent_at, $($field),* }),)*
+        impl CommandMessage {
+            /// The message for `command`. `sent_at` is the client's session clock in µs when the pilot gave it.
+            pub fn new(request_id: RequestId, sent_at: u32, command: Command) -> Self {
+                let message = match command {
+                    $(Command::$request { $($field),* } => {
+                        CommandMessage::$request($request { request_id, sent_at, $($field),* })
+                    })*
                 };
+                debug_assert_eq!(message.command(), command, "new and command don't agree");
+                return message;
+            }
+
+            pub fn request_id(self) -> RequestId {
+                return match self {
+                    $(CommandMessage::$request(message) => message.request_id,)*
+                };
+            }
+
+            pub fn sent_at(self) -> u32 {
+                return match self {
+                    $(CommandMessage::$request(message) => message.sent_at,)*
+                };
+            }
+
+            /// What the pilot asked, without what only our protocol has.
+            pub fn command(self) -> Command {
+                return match self {
+                    $(CommandMessage::$request(_message) => Command::$request { $($field: _message.$field),* },)*
+                };
+            }
+
+            /// The Reply with an outcome that fits every command. A refusal is typed per command: match the
+            /// command's message and use `Reply::to`.
+            pub fn reply(self, outcome: Outcome<::core::convert::Infallible>) -> Reply {
+                let reply = match self {
+                    $(CommandMessage::$request(message) => Reply::to(&message, outcome.widen()),)*
+                };
+                debug_assert_eq!(reply.request_id(), self.request_id());
+                return reply;
+            }
+
+            /// The Reply refusing it as too late (protocol.md §5.3); `None` for a command that never expires.
+            pub fn refuse_too_late(self) -> Option<Reply> {
+                let reply = match self {
+                    $(CommandMessage::$request(_message) => {
+                        $crate::wire::macros::messages!(@too_late $($expires)? $request _message)
+                    })*
+                };
+                debug_assert_eq!(reply.is_some(), self.command().expires(), "refuse_too_late and expires don't agree");
+                return reply;
+            }
+
+            fn message_type(self) -> u8 {
+                return match self {
+                    $(CommandMessage::$request(_) => $request_type,)*
+                };
+            }
+
+            fn write_payload(&self, w: &mut Writer) {
+                match self {
+                    $(CommandMessage::$request(m) => m.write(w),)*
+                }
             }
         }
 
@@ -177,29 +243,17 @@ macro_rules! messages {
         }
 
         impl Message {
-            /// The command a command message carries, with its Request ID and Sent At; `None` for other messages.
-            pub fn command(&self) -> Option<CommandRequest> {
-                return match *self {
-                    $(Message::$request(message) => Some(CommandRequest {
-                        request_id: message.request_id,
-                        sent_at: message.sent_at,
-                        command: Command::$request { $($field: message.$field),* },
-                    }),)*
-                    _ => None,
-                };
-            }
-
             fn message_type(&self) -> u8 {
                 return match self {
                     $(Message::$name(_) => $type,)*
-                    $(Message::$request(_) => $request_type,)*
+                    Message::Command(command) => command.message_type(),
                 };
             }
 
             fn read_payload(message_type: u8, r: &mut Reader) -> Result<Self, MessageError> {
                 return match message_type {
                     $($type => Ok(Message::$name(Wire::read(r)?)),)*
-                    $($request_type => Ok(Message::$request(Wire::read(r)?)),)*
+                    $($request_type => Ok(Message::Command(CommandMessage::$request(Wire::read(r)?))),)*
                     _ => Err(MessageError::UnknownType(UnknownType(message_type))),
                 };
             }
@@ -207,7 +261,7 @@ macro_rules! messages {
             fn write_payload(&self, w: &mut Writer) {
                 match self {
                     $(Message::$name(m) => m.write(w),)*
-                    $(Message::$request(m) => m.write(w),)*
+                    Message::Command(command) => command.write_payload(w),
                 }
             }
         }
