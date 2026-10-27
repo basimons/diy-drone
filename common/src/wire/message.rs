@@ -134,6 +134,21 @@ wire_struct!(
     RequestId(pub u16)
 );
 
+code!(
+    /// What the sticks mean (protocol.md §5.3). Also the internal state's type, as `domain::FlightMode`.
+    pub FlightMode: u8 {
+        Rate = 1,  // sticks set how fast the drone rotates; needs only the gyro
+        Angle = 2, // roll and pitch set a tilt angle, centred sticks level the drone; needs the attitude estimate
+    }
+);
+
+/// The drone starts in rate mode: it only needs the gyro.
+impl Default for FlightMode {
+    fn default() -> Self {
+        return Self::Rate;
+    }
+}
+
 /// How old an expiring command (`Command::expires`) may be, by its Sent At, before the drone refuses it as `TooLate`;
 /// the client stops resending it then too (protocol.md §5.3).
 pub const COMMAND_EXPIRY_US: u32 = 300_000;
@@ -209,6 +224,8 @@ messages! {
         /// Hold still and accept only a few requests.
         SteadyState = 0x26 {} refused SteadyStateRefusal { NotFlying },
         ExitSteadyState = 0x27 {},
+        /// Not expiring: a mode is a state, not an action. The drone only refuses angle, which a Reply can't show.
+        SetFlightMode = 0x28 { mode: FlightMode } refused SetFlightModeRefusal { AttitudeNotReady },
     }
 }
 

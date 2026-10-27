@@ -4,7 +4,7 @@
 use core::fmt::Write;
 
 use crate::wire::macros::{code, events, wire_struct};
-use crate::wire::message::MessageError;
+use crate::wire::message::{FlightMode, MessageError};
 use crate::wire::packet::MAX_PAYLOAD_LEN;
 use crate::wire::payload::{Reader, Wire, Writer, invalid};
 
@@ -64,6 +64,8 @@ events! {
         late_us: u32, // how late the loop run finished
     },
     ImuError = 0x0403, Error {},
+    /// After every change, also one the drone makes itself.
+    FlightModeChanged = 0x0501, Info { mode: FlightMode },
 }
 
 /// Free text from the drone, sent with Code 0.

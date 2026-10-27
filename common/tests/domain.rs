@@ -1,4 +1,4 @@
-use drone_common::domain::{ArmSwitch, CHANNEL_COUNT, LinkHealth, RcChannels, Uptime};
+use drone_common::domain::{ArmSwitch, CHANNEL_COUNT, FlightMode, LinkHealth, RcChannels, Uptime};
 
 #[test]
 fn rc_channels_are_11_bit() {
@@ -12,6 +12,12 @@ fn rc_channels_are_11_bit() {
 #[test]
 fn arm_switch_starts_off() {
     assert_eq!(ArmSwitch::default(), ArmSwitch::Off);
+}
+
+#[test]
+fn flight_mode_starts_in_rate() {
+    // protocol.md §5.3: rate needs only the gyro, so it works from boot.
+    assert_eq!(FlightMode::default(), FlightMode::Rate);
 }
 
 #[test]

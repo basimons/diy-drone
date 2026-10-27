@@ -108,6 +108,9 @@ impl LinkHealth {
 /// Stick positions (protocol.md §5.2). Defined with the messages, since the Sticks message is exactly this.
 pub use crate::wire::message::Sticks;
 
+/// What the sticks mean (protocol.md §5.3). Defined with the messages, since SetFlightMode carries it.
+pub use crate::wire::message::FlightMode;
+
 /// What the pilot asks the drone to do (protocol.md §5.3), whichever protocol it came over. Defined with the messages,
 /// since each command message is this plus its Request ID and Sent At.
 pub use crate::wire::message::Command;

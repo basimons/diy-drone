@@ -114,7 +114,7 @@ How packets travel depends on the link:
 |-------|-------|-------|
 | `0x01–0x0F` | Connection | `0x01` Hello, `0x02` HelloReply, `0x03` Ping, `0x04` Pong, `0x05` LinkTest, `0x06` LinkTestData, `0x07` LinkTestResult, `0x08` Ack |
 | `0x10–0x1F` | Control | `0x10` Sticks |
-| `0x20–0x3F` | Commands | `0x20` Arm, `0x21` Disarm, `0x22` TakeOff, `0x23` Land, `0x24` GoHome, `0x25` Flip, `0x26` SteadyState, `0x27` ExitSteadyState |
+| `0x20–0x3F` | Commands | `0x20` Arm, `0x21` Disarm, `0x22` TakeOff, `0x23` Land, `0x24` GoHome, `0x25` Flip, `0x26` SteadyState, `0x27` ExitSteadyState, `0x28` SetFlightMode |
 | `0x40–0x4F` | Replies & events | `0x40` Reply, `0x41` Event |
 | `0x50–0x5F` | Settings | `0x50` SetSettings, `0x51` GetSettings, `0x52` Settings |
 | `0x60–0x6F` | Data streams | `0x60` RequestOnce, `0x61` Subscribe, `0x62` StreamData, `0x63` StreamUpdate |
@@ -363,7 +363,7 @@ where:
 - **Pitch:** 2 bytes, i16. Forward/back. Same range.
 - **Yaw:** 2 bytes, i16. Turn on the spot. Same range.
 
-Values are stick positions, not distances; the flight code decides what they mean.
+Values are stick positions, not distances; the flight code decides what they mean, depending on the flight mode (§5.3).
 
 **The client sends Sticks at a steady rate whenever connected, even if nothing changed.** This is also the client's heartbeat. Target 50 Hz; may be lowered if the link is too slow (see §8).
 
@@ -411,6 +411,31 @@ GoHome is reserved until GPS is fitted; until then the drone answers "not suppor
 
 **TakeOff and Flip expire.** Carried out late, after resends, they would surprise the pilot, perhaps close to the ground. The drone refuses one that is more than **300 ms** old with Reason 14 "too late". Age = the drone's session clock − Sent At, as a signed wrapping difference. The drone's clock runs behind the client's by the one-way delay, so a fresh command can look a few ms in the future: a negative age counts as fresh. The client also stops resending these two after 300 ms and tells the pilot. Every other command is carried out however late it arrives: a late Disarm or Land is still what the pilot wanted.
 
+**SetFlightMode** (`0x28`, C→D): chooses what the sticks mean.
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |            Sent At            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            (cont.)            |      Mode     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16.
+- **Sent At (SA):** 4 bytes, u32. As above.
+- **Mode:** 1 byte. One of: 1 = rate, 2 = angle. 0 is never used.
+
+Flight modes (drone-design.md, "Flight modes"):
+
+- **Rate** (also called acro): roll, pitch and yaw set how fast the drone rotates; centred sticks stop the rotation but don't level the drone. Needs only the gyro.
+- **Angle** (also called self-level): roll and pitch set a tilt angle; centred sticks level the drone. Yaw still sets a rotation speed. Needs the attitude estimate (which way is down, from gyro and accelerometer).
+
+Throttle means the same in both. The drone starts in rate mode at boot, as it only needs the gyro. A mode is a state, not an action, so SetFlightMode doesn't expire, and asking for the current mode is simply OK. Over CRSF the mode is a switch channel: the CRSF adapter produces a SetFlightMode whenever that channel changes (which channel: §9). The current mode is in the Status stream (§5.6), and every change, also one the drone makes itself, is a Flight mode changed event (§5.4).
+
 **SteadyState** asks the drone to hold still where it is (level, holding height; without GPS it may drift sideways) and, while it does, to accept only a small set of requests. **ExitSteadyState** returns to normal flying. The client keeps sending Sticks as its heartbeat; while in steady state the drone ignores their values. Which requests are allowed in steady state (e.g. LinkTest, GetSettings, RequestOnce, Subscribe, Land, Disarm, ExitSteadyState) is drone-side logic, to be decided later; other requests get a Reply "not allowed now" (§5.4).
 
 ### 5.4 Replies and events
@@ -450,6 +475,7 @@ where:
 | 12 | unknown log |
 | 13 | offset past the end |
 | 14 | too late: the command is older than its expiry (§5.3) |
+| 15 | attitude not ready: no attitude estimate yet, e.g. the accelerometer is not calibrated |
 
 Reasons 8–13 belong to requests that `drone-common` doesn't implement yet; it adds a reason together with the first request that uses it.
 
@@ -465,6 +491,7 @@ What a Reply may say depends on the request:
 | Flip | Reply OK | 1 not armed, 2 not flying, 3 too low, 14 too late |
 | SteadyState | Reply OK | 2 not flying |
 | ExitSteadyState | Reply OK | never refused |
+| SetFlightMode | Reply OK | 15 attitude not ready (the drone only refuses angle; a Reply doesn't say which mode it answers) |
 | SetSettings | Reply OK | 8 unknown group, 9 value out of range |
 | Subscribe | Reply OK | 10 unknown stream, 11 rate not possible |
 | LinkTest | LinkTestResult, never Reply OK | none (e.g. while flying: Status "not allowed now") |
@@ -518,6 +545,7 @@ Events (the high byte of the Code groups them):
 | `0x0401` | Failsafe triggered (an automatic safety action took over) | error | Cause: u8 (0 is never used). 1 = link loss, 2 = client frozen (the link is alive but the client stopped updating, §6 rule 5), 3 = low battery, 4 = loop overrun |
 | `0x0402` | Loop overrun (the flight loop missed its deadline) | error | Late: u32, µs |
 | `0x0403` | IMU error | error | none |
+| `0x0501` | Flight mode changed | info | Mode: u8, the new mode, as in SetFlightMode (§5.3) |
 
 **Text** (Code `0x0000`):
 
@@ -599,11 +627,30 @@ where:
 - **Code (C):** 2 bytes, u16, `0x0402`.
 - **Late:** 4 bytes, u32, in µs. How late the loop run finished.
 
+**Flight mode changed** (`0x0501`): sent after every change, whether a SetFlightMode asked for it or the drone switched itself.
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            Event ID           |     Level     |      Code     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    (cont.)    |      Mode     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Event ID (EID):** 2 bytes, u16.
+- **Level (L):** 1 byte, info.
+- **Code (C):** 2 bytes, u16, `0x0501`.
+- **Mode:** 1 byte. The new mode: 1 = rate, 2 = angle. 0 is never used.
+
 Rules:
 
 - A known Code with a different Level, or with Data that doesn't match its layout, makes the Event invalid.
 - A Text event whose text is empty or not valid UTF-8 is invalid.
-- A Code, Level or Cause the receiver doesn't know makes the Event invalid (§2). New events are added to this table and to `drone-common` together, in a new protocol version.
+- A Code, Level, Cause or Mode the receiver doesn't know makes the Event invalid (§2). New events are added to this table and to `drone-common` together, in a new protocol version.
 
 ### 5.5 Settings
 
@@ -770,7 +817,7 @@ First streams (field layouts defined in `drone-common`, units as given):
 
 | ID | Stream | Units |
 |----|--------|-------|
-| 1 | Status: armed, mode, warning flags | — |
+| 1 | Status: armed, flight mode, warning flags | — |
 | 2 | Battery | mV |
 | 3 | Attitude (roll, pitch, yaw) | 0.01° |
 | 4 | Height | cm |
@@ -895,8 +942,8 @@ Two shared crates, both `no_std` (no operating system or heap needed) so the fli
 
 ```
 common/src/
-  domain.rs    internal state: Sticks, Command, ArmState, ArmSwitch, LinkHealth (with Uptime, this side's own
-               clock), RcChannels (raw CRSF channel values); later flight mode, settings values
+  domain.rs    internal state: Sticks, Command, ArmState, ArmSwitch, FlightMode, LinkHealth (with Uptime, this
+               side's own clock), RcChannels (raw CRSF channel values); later settings values
   wire/        our protocol
     crc16.rs      (private)
     cobs.rs       (private)
@@ -953,6 +1000,6 @@ common/src/
 
 ## 9. Still to decide
 
-- CRSF channel → internal state mapping (which AUX channel is arm, flip, etc.).
+- CRSF channel → internal state mapping (which AUX channel is arm, flight mode, flip, etc.).
 - Exact stream field layouts and settings group layouts beyond what is listed.
 - Default stream rates. The 20 ms ack delay, 300 ms expiry and 100 ms starting RTT are first guesses, to be measured.
