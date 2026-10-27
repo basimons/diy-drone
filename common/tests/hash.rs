@@ -36,7 +36,7 @@ fn public_types_are_hashable() {
         key_type::<Armed>(),
         key_type::<BatteryLow>(),
         key_type::<Text>(),
-        key_type::<FailsafeCause>(),
+        key_type::<ProtectionCause>(),
         key_type::<EventText>(),
         key_type::<MessageError>(),
         key_type::<PacketError>(),

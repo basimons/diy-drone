@@ -13,7 +13,7 @@ A 5-inch quadcopter, built for fun and for learning, where a **single Raspberry 
 ### Goals (first build)
 - Stable, controllable hover and gentle flight on the RC transmitter.
 - Pi decodes the RC link itself (CRSF serial from an ELRS receiver).
-- Failsafes that make crashes boring rather than dangerous.
+- Protections that make crashes boring rather than dangerous.
 
 ### Non-goals (first build)
 - GPS, position hold, autonomous missions.
@@ -22,7 +22,7 @@ A 5-inch quadcopter, built for fun and for learning, where a **single Raspberry 
 
 ### Anti-goals (failure even if it "works")
 - Motors that can spin up unexpectedly (on boot, on code crash, on link loss).
-- Flying near people or property before the failsafes are proven.
+- Flying near people or property before the protections are proven.
 
 ### Later (planned, not bought yet)
 - GPS (u-blox M10 + compass, second UART).
@@ -97,10 +97,13 @@ Flight loop rules: `SCHED_FIFO` high priority, `mlockall`, no allocation/syscall
 
 **Flight modes:** rate (gyro) loop first, then angle (self-level) mode on top for easy flying.
 
-### Failsafes (built before the first prop goes on)
+### Protections (built before the first prop goes on)
+
+Automatic safety actions: when something goes wrong that the pilot can't fix in time, the drone takes over. The drone hobby (Betaflight, ELRS) calls these *failsafes*; here they are called protections, as "failsafe" means several things in programming.
+
 - **Arming:** only while the transmitter's arm switch is on, with throttle low and a healthy IMU. The client can also send Arm, but it is refused unless the switch is on. Disarmed on boot.
 - **RC link loss:** no valid CRSF frame for >250 ms → disarm (later: controlled descent).
-- **Laptop program freeze/crash:** the TX module may keep sending stale values. The laptop program sends a counter on a spare channel that increments every frame; if it stops changing for >250 ms, the Pi triggers the same failsafe as for link loss (reported as cause "client frozen", protocol.md §5.4).
+- **Laptop program freeze/crash:** the TX module may keep sending stale values. The laptop program sends a counter on a spare channel that increments every frame; if it stops changing for >250 ms, the Pi triggers the same protection as for link loss (reported as cause "client frozen", protocol.md §5.4).
 - **Gamepad disconnect:** laptop program detects controller loss and sends disarm.
 - **Loop overrun:** flight loop misses deadlines or stalls → a watchdog on another core forces the motors to zero.
 - **Process crash/exit:** the PWM must fall to "motor off". Verify on the bench by killing the process.
@@ -112,7 +115,7 @@ Flight loop rules: `SCHED_FIFO` high priority, `mlockall`, no allocation/syscall
 2. IMU over SPI at 1 kHz+, check noise with the motors off and then on (props off).
 3. CRSF decode from the receiver, values shown live.
 4. Motors spin individually from code (**props off**). Check direction and order.
-5. Failsafe tests, all props off.
+5. Protection tests, all props off.
 6. Tethered/held hover test outdoors.
 7. Free hover in an open field, away from people.
 

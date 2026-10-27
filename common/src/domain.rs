@@ -34,7 +34,7 @@ pub enum ArmState {
     Armed,
 }
 
-/// The transmitter's arm switch. Arm is only accepted while it is on (drone-design.md, "Failsafes").
+/// The transmitter's arm switch. Arm is only accepted while it is on (drone-design.md, "Protections").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum ArmSwitch {
     #[default]
@@ -49,7 +49,7 @@ pub struct DroneStatus {
     pub arm_state: ArmState,
     pub flight_mode: FlightMode,
     pub battery: BatteryPercent,
-    pub failsafe: Option<FailsafeCause>, // the cause that triggered it, if several are active
+    pub protection: Option<ProtectionCause>, // the cause that triggered it, if several are active
     pub imu_error: bool,
 }
 
@@ -138,8 +138,8 @@ pub use crate::wire::message::Sticks;
 /// What the sticks mean (protocol.md §5.3). Defined with the messages, since SetFlightMode carries it.
 pub use crate::wire::message::FlightMode;
 
-/// Why a failsafe took over. Defined with the events, since the Failsafe triggered event carries it.
-pub use crate::wire::event::FailsafeCause;
+/// Why a protection took over. Defined with the events, since the Protection triggered event carries it.
+pub use crate::wire::event::ProtectionCause;
 
 /// What the pilot asks the drone to do (protocol.md §5.3), whichever protocol it came over. Defined with the messages,
 /// since each command message is this plus its Request ID and Sent At.
