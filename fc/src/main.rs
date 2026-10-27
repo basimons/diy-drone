@@ -1,8 +1,7 @@
-use drone_common::domain::{ArmState, RcChannels};
+use drone_common::domain::ArmState;
 
 fn main() -> anyhow::Result<()> {
     println!("boot state: {:?}", ArmState::default());
-    println!("channels: {:?}", RcChannels::default());
 
     #[cfg(target_os = "linux")]
     {

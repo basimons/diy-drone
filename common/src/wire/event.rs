@@ -12,6 +12,10 @@ pub use crate::wire::message::Event;
 
 /// The rest of the payload after Event ID, Level and Code.
 pub const MAX_EVENT_TEXT_LEN: usize = MAX_PAYLOAD_LEN - 5;
+const _: () = assert!(
+    MAX_EVENT_TEXT_LEN <= u8::MAX as usize,
+    "EventText stores its length in a u8"
+);
 
 wire_struct!(
     /// Numbers the drone's events, so the client shows a resent one only once (protocol.md §5.0a). Every value is
@@ -74,7 +78,7 @@ pub struct Text {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EventText {
     bytes: [u8; MAX_EVENT_TEXT_LEN], // zero after `len`, so the derived `PartialEq` compares the text only
-    len: usize,
+    len: u8,                         // a u8 holds MAX_EVENT_TEXT_LEN and keeps every Message smaller
 }
 
 impl EventText {
@@ -100,12 +104,13 @@ struct Buffer(EventText);
 
 impl Write for Buffer {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let end = self.0.len + s.len();
+        let start = usize::from(self.0.len);
+        let end = start + s.len();
         if end > MAX_EVENT_TEXT_LEN {
             return Err(core::fmt::Error);
         }
-        self.0.bytes[self.0.len..end].copy_from_slice(s.as_bytes());
-        self.0.len = end;
+        self.0.bytes[start..end].copy_from_slice(s.as_bytes());
+        self.0.len = u8::try_from(end).expect("MAX_EVENT_TEXT_LEN fits in a u8");
         return Ok(());
     }
 }
@@ -114,12 +119,13 @@ impl core::ops::Deref for EventText {
     type Target = str;
 
     fn deref(&self) -> &str {
-        debug_assert!((1..=MAX_EVENT_TEXT_LEN).contains(&self.len), "length {}", self.len);
+        let len = usize::from(self.len);
+        debug_assert!((1..=MAX_EVENT_TEXT_LEN).contains(&len), "length {len}");
         debug_assert!(
-            self.bytes[self.len..].iter().all(|&b| return b == 0),
+            self.bytes[len..].iter().all(|&b| return b == 0),
             "PartialEq needs zero padding"
         );
-        return core::str::from_utf8(&self.bytes[..self.len]).expect("only built from a str");
+        return core::str::from_utf8(&self.bytes[..len]).expect("only built from a str");
     }
 }
 

@@ -47,50 +47,75 @@ impl UnknownType {
     }
 }
 
-/// Hello/HelloReply options (protocol.md §5.1).
+/// The options this build knows (protocol.md §5.1). In HelloReply: the options the drone accepted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Options {
     pub authentication: bool,
-    pub unknown: UnknownOptions,
 }
 
 const KNOWN_OPTIONS: u32 = AUTHENTICATION;
 const AUTHENTICATION: u32 = 1 << 0;
 
-/// Option bits without a meaning yet. Hello is read across protocol versions, and the drone answers these with
-/// "option not supported", so they are kept. Can't hold a known bit, so every `Options` encodes and decodes back
-/// unchanged.
+impl Options {
+    fn from_bits(bits: u32) -> Self {
+        debug_assert_eq!(bits & !KNOWN_OPTIONS, 0, "{bits:#x} holds unknown options");
+        return Self {
+            authentication: bits & AUTHENTICATION != 0,
+        };
+    }
+
+    fn bits(self) -> u32 {
+        return if self.authentication { AUTHENTICATION } else { 0 };
+    }
+}
+
+/// A drone can't accept an option it has no meaning for, so an unknown bit doesn't decode.
+impl Wire for Options {
+    fn read(r: &mut Reader) -> Result<Self, MessageError> {
+        let bits = u32::read(r)?;
+        return if bits & !KNOWN_OPTIONS == 0 {
+            Ok(Self::from_bits(bits))
+        } else {
+            Err(MessageError::InvalidValue)
+        };
+    }
+
+    fn write(&self, w: &mut Writer) {
+        self.bits().write(w);
+    }
+}
+
+/// The options a Hello asks for: the ones this build knows, and bits it doesn't. Hello is read across protocol
+/// versions, and the drone answers unknown bits with "option not supported", so they are kept.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct HelloOptions {
+    pub known: Options,
+    pub unknown: UnknownOptions,
+}
+
+/// Option bits without a meaning in this build. Only decoding a Hello makes one with bits set, and never with a
+/// known bit, so every `HelloOptions` encodes and decodes back unchanged.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct UnknownOptions(u32);
 
 impl UnknownOptions {
-    /// `None` if `bits` includes a known option.
-    pub fn new(bits: u32) -> Option<Self> {
-        return if bits & KNOWN_OPTIONS == 0 {
-            Some(Self(bits))
-        } else {
-            None
-        };
-    }
-
     pub fn bits(self) -> u32 {
         return self.0;
     }
 }
 
-impl Wire for Options {
+impl Wire for HelloOptions {
     fn read(r: &mut Reader) -> Result<Self, MessageError> {
         let bits = u32::read(r)?;
         return Ok(Self {
-            authentication: bits & AUTHENTICATION != 0,
+            known: Options::from_bits(bits & KNOWN_OPTIONS),
             unknown: UnknownOptions(bits & !KNOWN_OPTIONS),
         });
     }
 
     fn write(&self, w: &mut Writer) {
         debug_assert_eq!(self.unknown.0 & KNOWN_OPTIONS, 0, "UnknownOptions holds a known bit");
-        let authentication = if self.authentication { AUTHENTICATION } else { 0 };
-        (authentication | self.unknown.0).write(w);
+        (self.known.bits() | self.unknown.0).write(w);
     }
 }
 
@@ -109,8 +134,8 @@ wire_struct!(
     RequestId(pub u16)
 );
 
-/// How old a TakeOff or Flip may be, by its Sent At, before the drone refuses it as `TooLate`; the client stops
-/// resending it then too (protocol.md §5.3).
+/// How old an expiring command (`Command::expires`) may be, by its Sent At, before the drone refuses it as `TooLate`;
+/// the client stops resending it then too (protocol.md §5.3).
 pub const COMMAND_EXPIRY_US: u32 = 300_000;
 
 mod sealed {
@@ -125,7 +150,8 @@ pub trait Request: sealed::Sealed {
 
     fn request_id(&self) -> RequestId;
 
-    /// The `Answer` variant for this request.
+    /// The `Answer` variant for this request. A bare `Answer` is harmless: only `Reply::to` pairs it with the
+    /// request's Request ID.
     fn answer(outcome: Outcome<Self::Refusal>) -> Answer;
 }
 
@@ -133,7 +159,7 @@ messages! {
     others {
         Hello = 0x01 {
             protocol_version: u8,
-            options: Options,
+            options: HelloOptions,
         },
         HelloReply = 0x02 {
             protocol_version: u8,
@@ -215,13 +241,14 @@ impl Answer {
 }
 
 impl Message {
-    /// Writes the packet into `out`. Hello and HelloReply are message 0 of a session (protocol.md §5.1), so for
-    /// them `sequence` must be 0.
+    /// Writes the packet into `out`. Hello and HelloReply are always written as message 0 of a session (protocol.md
+    /// §5.1); passing another `sequence` for them is a bug in the caller, reported in debug builds.
     pub fn encode<'a>(&self, sequence: u16, out: &'a mut [u8; MAX_PACKET_LEN]) -> Packet<'a> {
         debug_assert!(
             !self.is_handshake() || sequence == 0,
             "Hello and HelloReply are message 0 of a session, not message {sequence}"
         );
+        let sequence = if self.is_handshake() { 0 } else { sequence };
         let packet = self.write(sequence, out);
         debug_assert_eq!(Self::read(&packet), Ok(*self), "encoding doesn't decode back");
         return packet;

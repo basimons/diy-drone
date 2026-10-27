@@ -211,7 +211,7 @@ where:
 
 - **Version (Ver):** 1 byte, u8. The drone's protocol version.
 - **Result (R):** 1 byte. One of: 0 = OK, 1 = version mismatch, 2 = option not supported.
-- **Options (Opt):** 4 bytes, u32. The options the drone accepted. When R == 2, the bits the client asked for that are missing here are the unsupported ones.
+- **Options (Opt):** 4 bytes, u32. The options the drone accepted: only bits the Hello asked for, so only bits the client knows. When R == 2, the bits the client asked for that are missing here are the unsupported ones.
 
 **Ping** (`0x03`, either direction):
 
@@ -265,7 +265,7 @@ Rules:
 
 - **Until a handshake succeeds, each side ignores everything except Hello, HelloReply, Ping and Pong.** A Ping before the handshake only measures the round trip; its times use no session clock yet.
 - **Hello and HelloReply carry Sequence 0.** On a valid Hello the drone resets both counters; its HelloReply is its message 0.
-- **Hello and HelloReply never change**, not even in a new protocol version: their layout, Result codes and the meaning of each option bit stay as they are, so a client and drone of different versions can always tell each other so. Option bits the receiver doesn't know are kept, so the drone can answer "option not supported".
+- **Hello and HelloReply never change**, not even in a new protocol version: their layout, Result codes and the meaning of each option bit stay as they are, so a client and drone of different versions can always tell each other so. Option bits in a Hello that the drone doesn't know are kept, so it can answer "option not supported". A HelloReply never has such bits: the client only asks for options it knows, and the drone only accepts options that were asked for.
 - **A new Hello restarts the session at the protocol layer only:** sequence counters, subscriptions (back to the default set) and the remembered Request IDs. It does **not** touch the internal state (sticks, armed state, settings). Sticks stop arriving while the client reconnects; that gap is handled by the normal link-loss logic like any other silence.
 - When authentication is added, the handshake is also where both sides exchange fresh random numbers for the session (protection against replaying recorded messages). Not now.
 
@@ -935,7 +935,7 @@ common/src/
 ### 7.1 Decisions
 
 - **Decoded messages own their data.** Variable-length fields (Event text, LogChunk data, setting group lists, …) are copied out of the receive buffer into a fixed-size array plus a length inside the message. Every message is therefore as big as the biggest one (~250 bytes), which is fine; in return messages can be kept, queued and handed to other threads without Rust lifetimes everywhere. Switching to borrowing from the receive buffer stays possible if copying ever matters.
-- **Decoded messages are typed, not raw bytes.** Codes are enums and bit fields are structs of named `bool`s; plain numbers stay numbers (versions, counts, µs, cm). A code enum holds only the values the protocol defines: a number it doesn't know fails decoding (`MessageError::UnknownCode`, with the number, so it can be logged), because a peer that passed Hello knows the same codes. So every value that can be built can also be sent. The two exceptions hold only what the other side really didn't know: `UnknownType`, a type byte this build has no message for (to answer "unknown type"), and `UnknownOptions`, Hello option bits without a meaning yet. Combinations the protocol forbids (e.g. a Reply OK with a Reason) are made impossible by the types, and rejected when decoding.
+- **Decoded messages are typed, not raw bytes.** Codes are enums and bit fields are structs of named `bool`s; plain numbers stay numbers (versions, counts, µs, cm). A code enum holds only the values the protocol defines: a number it doesn't know fails decoding (`MessageError::UnknownCode`, with the number, so it can be logged), because a peer that passed Hello knows the same codes. So every value that can be built can also be sent. The two exceptions hold only what the other side really didn't know: `UnknownType`, a type byte this build has no message for (to answer "unknown type"), and `UnknownOptions`, option bits in a Hello without a meaning yet (only a Hello: a HelloReply holds only options the client asked for). Combinations the protocol forbids (e.g. a Reply OK with a Reason) are made impossible by the types, and rejected when decoding.
 - **Rust types follow the implemented messages.** A message type from §5 that has no Rust message yet (e.g. LinkTest) is unknown to that build, and its codes are added together with it.
 - **Three kinds of checks:**
   1. **Incoming data** (known enum values, ranges, lengths): part of decoding, **always on, also in release builds**, because release is the build that flies. A decoded message is always a valid message.

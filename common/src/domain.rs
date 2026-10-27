@@ -8,7 +8,7 @@ pub const CHANNEL_MAX: u16 = 1811;
 /// The largest 11-bit value.
 pub const CHANNEL_LIMIT: u16 = 0x07FF;
 
-/// In raw CRSF units, each 0 … `CHANNEL_LIMIT`.
+/// In raw CRSF units, each 0 … `CHANNEL_LIMIT`. No `Default`: all channels centred would be half throttle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RcChannels([u16; CHANNEL_COUNT]);
 
@@ -24,12 +24,6 @@ impl RcChannels {
 
     pub fn values(&self) -> [u16; CHANNEL_COUNT] {
         return self.0;
-    }
-}
-
-impl Default for RcChannels {
-    fn default() -> Self {
-        return Self([CHANNEL_MID; CHANNEL_COUNT]);
     }
 }
 
