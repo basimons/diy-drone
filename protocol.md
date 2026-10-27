@@ -500,7 +500,7 @@ What a Reply may say depends on the request:
 | ListLogs | LogList, never Reply OK | none |
 | ReadLog | LogChunk, never Reply OK | 12 unknown log, 13 offset past the end |
 
-Arm is only accepted while the transmitter's arm switch is on (drone-design.md, "Failsafes"), so a client bug or a stray message can't start the motors on its own.
+Arm is only accepted while the transmitter's arm switch is on (drone-design.md, "Protections"), so a client bug or a stray message can't start the motors on its own.
 
 Rules:
 
@@ -542,7 +542,7 @@ Events (the high byte of the Code groups them):
 | `0x0202` | Link restored | info | none |
 | `0x0301` | Battery low | warning | Millivolts: u16, whole pack |
 | `0x0302` | Battery critical | error | Millivolts: u16, whole pack |
-| `0x0401` | Failsafe triggered (an automatic safety action took over) | error | Cause: u8 (0 is never used). 1 = link loss, 2 = client frozen (the link is alive but the client stopped updating, §6 rule 5), 3 = low battery, 4 = loop overrun |
+| `0x0401` | Protection triggered (an automatic safety action took over) | error | Cause: u8 (0 is never used). 1 = link loss, 2 = client frozen (the link is alive but the client stopped updating, §6 rule 5), 3 = low battery, 4 = loop overrun |
 | `0x0402` | Loop overrun (the flight loop missed its deadline) | error | Late: u32, µs |
 | `0x0403` | IMU error | error | none |
 | `0x0501` | Flight mode changed | info | Mode: u8, the new mode, as in SetFlightMode (§5.3) |
@@ -587,7 +587,7 @@ where:
 - **Code (C):** 2 bytes, u16. `0x0301` or `0x0302`.
 - **Millivolts:** 2 bytes, u16. Voltage of the whole pack.
 
-**Failsafe triggered** (`0x0401`):
+**Protection triggered** (`0x0401`):
 
 ```
  0               1               2               3
@@ -809,7 +809,7 @@ where:
 
 Rules:
 
-- After a successful handshake, the drone starts a **default set** (the glance screen) without being asked, sent as StreamUpdate: status, battery, attitude, height, link quality, at a few Hz. Exact rates: to be decided.
+- After a successful handshake, the drone starts a **default set** (the glance screen) without being asked, sent as StreamUpdate: status (with the battery), attitude, height, link quality, at a few Hz. Exact rates: to be decided.
 - Streams can be subscribed, changed and stopped during flight.
 - Stream data uses **fixed-point whole numbers** (exact, small), e.g. mV, centidegrees, cm.
 
@@ -817,13 +817,12 @@ First streams (field layouts defined in `drone-common`, units as given):
 
 | ID | Stream | Units |
 |----|--------|-------|
-| 1 | Status: armed, flight mode, warning flags | — |
-| 2 | Battery | mV |
-| 3 | Attitude (roll, pitch, yaw) | 0.01° |
-| 4 | Height | cm |
-| 5 | Raw IMU (accel, gyro) | sensor units, documented per field |
-| 6 | GPS (reserved, later) | 1e-7° lat/lon |
-| 7 | Link quality (good/dropped frame counts) | — |
+| 1 | Status: armed, flight mode, battery (estimated charge left, from the pack voltage), protection cause, IMU error | battery in % (0 … 100) |
+| 2 | Attitude (roll, pitch, yaw) | 0.01° |
+| 3 | Height | cm |
+| 4 | Raw IMU (accel, gyro) | sensor units, documented per field |
+| 5 | GPS (reserved, later) | 1e-7° lat/lon |
+| 6 | Link quality (good/dropped frame counts) | — |
 
 ### 5.7 Logs
 
@@ -943,7 +942,8 @@ Two shared crates, both `no_std` (no operating system or heap needed) so the fli
 ```
 common/src/
   domain.rs    internal state: Sticks, Command, ArmState, ArmSwitch, FlightMode, LinkHealth (with Uptime, this
-               side's own clock), RcChannels (raw CRSF channel values); later settings values
+               side's own clock), RcChannels (raw CRSF channel values); what the drone reports: DroneStatus
+               (with BatteryPercent; ProtectionCause re-exported); later settings values, attitude, height
   wire/        our protocol
     crc16.rs      (private)
     cobs.rs       (private)

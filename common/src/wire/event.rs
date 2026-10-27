@@ -31,8 +31,8 @@ code!(pub EventLevel: u8 {
 });
 
 code!(
-    /// Why a failsafe took over (drone-design.md §4).
-    pub FailsafeCause: u8 {
+    /// Why a protection took over (drone-design.md, "Protections").
+    pub ProtectionCause: u8 {
         LinkLoss = 1,
         ClientFrozen = 2, // the link is alive but the client stopped updating (protocol.md §6 rule 5)
         LowBattery = 3,
@@ -58,7 +58,7 @@ events! {
         millivolts: u16, // whole pack
     },
     /// An automatic safety action took over.
-    FailsafeTriggered = 0x0401, Error { cause: FailsafeCause },
+    ProtectionTriggered = 0x0401, Error { cause: ProtectionCause },
     /// The flight loop missed its deadline.
     LoopOverrun = 0x0402, Error {
         late_us: u32, // how late the loop run finished

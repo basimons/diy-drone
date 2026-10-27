@@ -209,7 +209,7 @@ messages! {
         },
     }
     commands {
-        /// Accepted only while the transmitter's arm switch is on (drone-design.md, "Failsafes").
+        /// Accepted only while the transmitter's arm switch is on (drone-design.md, "Protections").
         Arm = 0x20 {} refused ArmRefusal { BatteryLow, ThrottleNotLow, ImuNotReady, ArmSwitchOff },
         /// Never refused: disarming must always work.
         Disarm = 0x21 {},

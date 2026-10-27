@@ -9,7 +9,7 @@ Hardware, wiring and goals are in [drone-design.md](drone-design.md). The client
 |--------|-------|---------|--------------|
 | `common/` | `drone-common` | anywhere (no OS needed) | Shared domain types, our link protocol's messages and framing, and the CRSF byte protocol ([common/README.md](common/README.md)) |
 | `client/` | `drone-client` | Windows, macOS, Linux | Reads the gamepad, encodes CRSF frames, sends them over USB serial to the ELRS transmitter module |
-| `fc/` | `drone-fc` | Linux (Raspberry Pi 5, or any board with SPI/I2C/GPIO) | Flight code: sensors, stabilization, motors, failsafes |
+| `fc/` | `drone-fc` | Linux (Raspberry Pi 5, or any board with SPI/I2C/GPIO) | Flight code: sensors, stabilization, motors, protections |
 
 `client` and `fc` both depend on `common`, so the two sides of the link always agree on the format.
 
@@ -56,4 +56,4 @@ Then copy `target/aarch64-unknown-linux-gnu/release/drone-fc` to the Pi.
 - [ ] Client: gamepad → channels → serial
 - [ ] FC: read CRSF from the receiver UART
 - [ ] FC: IMU over SPI
-- [ ] FC: motor output, failsafes
+- [ ] FC: motor output, protections

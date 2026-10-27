@@ -34,12 +34,39 @@ pub enum ArmState {
     Armed,
 }
 
-/// The transmitter's arm switch. Arm is only accepted while it is on (drone-design.md, "Failsafes").
+/// The transmitter's arm switch. Arm is only accepted while it is on (drone-design.md, "Protections").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum ArmSwitch {
     #[default]
     Off,
     On,
+}
+
+/// What the drone reports about itself at a glance (the Status stream, protocol.md §5.6). No `Default`: it is only
+/// built once the battery and IMU have been read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DroneStatus {
+    pub arm_state: ArmState,
+    pub flight_mode: FlightMode,
+    pub battery: BatteryPercent,
+    pub protection: Option<ProtectionCause>, // the cause that triggered it, if several are active
+    pub imu_error: bool,
+}
+
+/// Estimated charge left, 0 … 100 %. The drone works it out from the pack voltage; when it counts as low, it says so
+/// with the Battery low and Battery critical events (protocol.md §5.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BatteryPercent(u8);
+
+impl BatteryPercent {
+    /// `None` above 100.
+    pub fn new(percent: u8) -> Option<Self> {
+        return if percent <= 100 { Some(Self(percent)) } else { None };
+    }
+
+    pub fn value(&self) -> u8 {
+        return self.0;
+    }
 }
 
 /// A point in time on this side's own clock, in µs since it started. A u64 never wraps (585 000 years), unlike the
@@ -110,6 +137,9 @@ pub use crate::wire::message::Sticks;
 
 /// What the sticks mean (protocol.md §5.3). Defined with the messages, since SetFlightMode carries it.
 pub use crate::wire::message::FlightMode;
+
+/// Why a protection took over. Defined with the events, since the Protection triggered event carries it.
+pub use crate::wire::event::ProtectionCause;
 
 /// What the pilot asks the drone to do (protocol.md §5.3), whichever protocol it came over. Defined with the messages,
 /// since each command message is this plus its Request ID and Sent At.

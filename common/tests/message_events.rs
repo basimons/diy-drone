@@ -46,11 +46,11 @@ fn events_with_data() {
 }
 
 #[test]
-fn every_failsafe_cause() {
-    use FailsafeCause::*;
+fn every_protection_cause() {
+    use ProtectionCause::*;
     for (cause, byte) in [(LinkLoss, 1), (ClientFrozen, 2), (LowBattery, 3), (LoopOverrun, 4)] {
         check(
-            EventKind::FailsafeTriggered(FailsafeTriggered { cause }),
+            EventKind::ProtectionTriggered(ProtectionTriggered { cause }),
             &[3, 0x01, 0x04, byte],
         );
     }
@@ -177,11 +177,11 @@ fn rejects_unknown_codes() {
     );
     assert_eq!(
         decode_payload(EVENT, &with_id(&[3, 0x01, 0x04, 0])),
-        unknown("FailsafeCause", 0)
+        unknown("ProtectionCause", 0)
     );
     assert_eq!(
         decode_payload(EVENT, &with_id(&[3, 0x01, 0x04, 0xEE])),
-        unknown("FailsafeCause", 0xEE)
+        unknown("ProtectionCause", 0xEE)
     );
     assert_eq!(
         decode_payload(EVENT, &with_id(&[1, 0x01, 0x05, 0])),
@@ -202,9 +202,9 @@ fn rejects_known_events_that_dont_fit() {
             vec![2, 0x01, 0x03, 0, 0, 0],
             WrongLength,
         ),
-        ("FailsafeTriggered without a cause", vec![3, 0x01, 0x04], WrongLength),
+        ("ProtectionTriggered without a cause", vec![3, 0x01, 0x04], WrongLength),
         (
-            "FailsafeTriggered with too much data",
+            "ProtectionTriggered with too much data",
             vec![3, 0x01, 0x04, 1, 0],
             WrongLength,
         ),
