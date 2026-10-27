@@ -1,7 +1,7 @@
 mod support;
 
 use drone_common::wire::event::*;
-use drone_common::wire::message::{Message, MessageError};
+use drone_common::wire::message::{FlightMode, Message, MessageError};
 use support::*;
 
 const EVENT: u8 = 0x41;
@@ -52,6 +52,16 @@ fn every_failsafe_cause() {
         check(
             EventKind::FailsafeTriggered(FailsafeTriggered { cause }),
             &[3, 0x01, 0x04, byte],
+        );
+    }
+}
+
+#[test]
+fn every_flight_mode_change() {
+    for (mode, byte) in [(FlightMode::Rate, 1), (FlightMode::Angle, 2)] {
+        check(
+            EventKind::FlightModeChanged(FlightModeChanged { mode }),
+            &[1, 0x01, 0x05, byte],
         );
     }
 }
@@ -172,6 +182,10 @@ fn rejects_unknown_codes() {
     assert_eq!(
         decode_payload(EVENT, &with_id(&[3, 0x01, 0x04, 0xEE])),
         unknown("FailsafeCause", 0xEE)
+    );
+    assert_eq!(
+        decode_payload(EVENT, &with_id(&[1, 0x01, 0x05, 0])),
+        unknown("FlightMode", 0)
     );
 }
 

@@ -6,6 +6,7 @@ use drone_common::wire::reply::{Outcome, Reply};
 use support::*;
 
 const FLIP: u8 = 0x25;
+const SET_FLIGHT_MODE: u8 = 0x28;
 const REPLY: u8 = 0x40;
 
 const FLIP_LEFT: Command = Command::Flip {
@@ -13,7 +14,11 @@ const FLIP_LEFT: Command = Command::Flip {
     duration_ms: 300,
 };
 
-const ALL: [Command; 8] = [
+const SET_ANGLE: Command = Command::SetFlightMode {
+    mode: FlightMode::Angle,
+};
+
+const ALL: [Command; 9] = [
     Command::Arm,
     Command::Disarm,
     Command::TakeOff,
@@ -22,6 +27,7 @@ const ALL: [Command; 8] = [
     FLIP_LEFT,
     Command::SteadyState,
     Command::ExitSteadyState,
+    SET_ANGLE,
 ];
 
 /// The type byte, the message and the payload of `command` with Request ID 7 and Sent At 0x04030201. No `_` arm: a
@@ -56,6 +62,14 @@ fn expected(command: Command) -> (u8, CommandMessage, Vec<u8>) {
             let message = CommandMessage::ExitSteadyState(ExitSteadyState { request_id, sent_at });
             (0x27, message, header)
         }
+        Command::SetFlightMode { mode } => {
+            let message = CommandMessage::SetFlightMode(SetFlightMode {
+                request_id,
+                sent_at,
+                mode,
+            });
+            (SET_FLIGHT_MODE, message, [header, vec![mode as u8]].concat())
+        }
     };
 }
 
@@ -72,6 +86,29 @@ fn flip_message() {
     let (_, message, payload) = expected(FLIP_LEFT);
     assert_eq!(payload, [0x07, 0x00, 0x01, 0x02, 0x03, 0x04, 0x00, 0xC0, 0x2C, 0x01]);
     check_round_trip(Message::Command(message), FLIP, &payload);
+}
+
+#[test]
+fn set_flight_mode_message() {
+    for (mode, byte) in [(FlightMode::Rate, 1), (FlightMode::Angle, 2)] {
+        let (_, message, payload) = expected(Command::SetFlightMode { mode });
+        assert_eq!(payload, [0x07, 0x00, 0x01, 0x02, 0x03, 0x04, byte]);
+        check_round_trip(Message::Command(message), SET_FLIGHT_MODE, &payload);
+    }
+}
+
+#[test]
+fn set_flight_mode_rejects_unknown_modes() {
+    // protocol.md §5.3: 1 = rate, 2 = angle, 0 is never used.
+    for byte in [0, 3, 0xFF] {
+        assert_eq!(
+            decode_payload(SET_FLIGHT_MODE, &[0x07, 0x00, 0x01, 0x02, 0x03, 0x04, byte]),
+            Err(MessageError::UnknownCode {
+                kind: "FlightMode",
+                value: byte.into()
+            })
+        );
+    }
 }
 
 #[test]
@@ -99,9 +136,10 @@ fn request_id_and_sent_at_are_carried_unchanged() {
 
 #[test]
 fn all_lists_every_command_the_library_knows() {
+    // Ones, not zeros: 1 is a valid value for every field, also for codes like FlightMode, where 0 is never used.
     let decodes_to_a_command = |message_type: u8| {
-        return [6, 10].into_iter().any(|len| {
-            return matches!(decode_payload(message_type, &vec![0; len]), Ok(Message::Command(_)));
+        return (0..=249).any(|len| {
+            return matches!(decode_payload(message_type, &vec![1; len]), Ok(Message::Command(_)));
         });
     };
     let library: Vec<u8> = (0..=u8::MAX).filter(|&t| return decodes_to_a_command(t)).collect();

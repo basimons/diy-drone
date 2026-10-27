@@ -30,7 +30,7 @@ fn payload(answers: u8, status: u8, reason: u16) -> Vec<u8> {
 
 #[test]
 fn every_request_type_can_be_answered_ok() {
-    let answers: [(Answer, u8); 8] = [
+    let answers: [(Answer, u8); 9] = [
         (Answer::Arm(Outcome::Ok), 0x20),
         (Answer::Disarm(Outcome::Ok), 0x21),
         (Answer::TakeOff(Outcome::Ok), 0x22),
@@ -39,6 +39,7 @@ fn every_request_type_can_be_answered_ok() {
         (Answer::Flip(Outcome::Ok), 0x25),
         (Answer::SteadyState(Outcome::Ok), 0x26),
         (Answer::ExitSteadyState(Outcome::Ok), 0x27),
+        (Answer::SetFlightMode(Outcome::Ok), 0x28),
     ];
     for (answer, answers) in answers {
         check_reply(answer, &payload(answers, 0, 0));
@@ -74,6 +75,11 @@ fn every_refusal_with_its_reason() {
             0x26,
             2,
         ),
+        (
+            Answer::SetFlightMode(Outcome::Refused(SetFlightModeRefusal::AttitudeNotReady)),
+            0x28,
+            15,
+        ),
     ];
     for (answer, answers, reason) in cases {
         check_reply(answer, &payload(answers, 1, reason));
@@ -97,6 +103,10 @@ fn a_reason_has_one_number_for_every_request() {
     assert_eq!(
         Reason::from(LandRefusal::NotFlying),
         Reason::from(SteadyStateRefusal::NotFlying)
+    );
+    assert_eq!(
+        Reason::from(SetFlightModeRefusal::AttitudeNotReady),
+        Reason::AttitudeNotReady
     );
     check_reply(
         Answer::TakeOff(Outcome::Refused(TakeOffRefusal::NotArmed)),
@@ -254,6 +264,8 @@ fn rejects_impossible_combinations() {
             "Arm refused as too late: only TakeOff and Flip expire",
             payload(0x20, 1, 14),
         ),
+        ("Arm refused because the attitude is not ready", payload(0x20, 1, 15)),
+        ("SetFlightMode refused because it is not armed", payload(0x28, 1, 1)),
         ("GoHome refused", payload(0x24, 1, 1)),
         ("ExitSteadyState refused", payload(0x27, 1, 1)),
         ("unknown type for a known request", payload(0x20, 2, 0)),
