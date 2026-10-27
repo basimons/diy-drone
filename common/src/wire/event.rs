@@ -3,13 +3,21 @@
 
 use core::fmt::Write;
 
-use crate::wire::macros::{code, events};
+use crate::wire::macros::{code, events, wire_struct};
 use crate::wire::message::MessageError;
 use crate::wire::packet::MAX_PAYLOAD_LEN;
 use crate::wire::payload::{Reader, Wire, Writer, invalid};
 
-/// The rest of the payload after Level and Code.
-pub const MAX_EVENT_TEXT_LEN: usize = MAX_PAYLOAD_LEN - 3;
+pub use crate::wire::message::Event;
+
+/// The rest of the payload after Event ID, Level and Code.
+pub const MAX_EVENT_TEXT_LEN: usize = MAX_PAYLOAD_LEN - 5;
+
+wire_struct!(
+    /// Numbers the drone's events, so the client shows a resent one only once (protocol.md §5.0a). Every value is
+    /// valid: the drone counts up with `wrapping_add`.
+    EventId(pub u16)
+);
 
 code!(pub EventLevel: u8 {
     Debug = 0,
@@ -28,8 +36,8 @@ code!(
     }
 );
 
-/// What every event type has: its code and level on the wire.
-pub trait EventKind {
+/// An event with its own type: its Code and its fixed Level on the wire. Text chooses its own level instead.
+pub trait FixedEvent {
     const CODE: u16;
     const LEVEL: EventLevel;
 }

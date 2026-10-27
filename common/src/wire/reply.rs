@@ -85,6 +85,7 @@ code!(
         ThrottleNotLow = 5,
         ImuNotReady = 6, // IMU: the motion sensor
         ArmSwitchOff = 7, // the transmitter's arm switch is not in the armed position
+        TooLate = 14,     // the command is older than its expiry (protocol.md §5.3)
     }
 );
 

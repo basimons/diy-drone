@@ -1,6 +1,22 @@
 /// Defines a struct whose fields are written one after the other, in the order listed. The fields are listed once,
-/// for the struct and for both directions. Without fields it is a unit struct (`Armed`, not `Armed {}`).
+/// for the struct and for both directions. Without fields it is a unit struct (`Armed`, not `Armed {}`); with one
+/// unnamed field a wrapper written as that field (`RequestId(pub u16)`).
 macro_rules! wire_struct {
+    ($(#[$meta:meta])* $name:ident(pub $ty:ty)) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub struct $name(pub $ty);
+
+        impl $crate::wire::payload::Wire for $name {
+            fn read(r: &mut $crate::wire::payload::Reader) -> Result<Self, $crate::wire::message::MessageError> {
+                return Ok(Self(<$ty as $crate::wire::payload::Wire>::read(r)?));
+            }
+
+            fn write(&self, w: &mut $crate::wire::payload::Writer) {
+                $crate::wire::payload::Wire::write(&self.0, w);
+            }
+        }
+    };
     ($(#[$meta:meta])* $name:ident {}) => {
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

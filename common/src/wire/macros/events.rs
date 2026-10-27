@@ -1,4 +1,5 @@
-/// Defines every event from one list: its struct, code and level, and `Event` over all of them plus `Text`.
+/// Defines every event from one list: its struct, code and level, and `EventKind` over all of them plus `Text`.
+/// The `Event` message around an `EventKind` (with its Event ID) is in the `messages!` list.
 macro_rules! events {
     ($($(#[$meta:meta])* $name:ident = $code:literal, $level:ident { $($fields:tt)* },)*) => {
         const _: () = assert!($($code != 0 &&)* true, "Code 0 is Text");
@@ -6,7 +7,7 @@ macro_rules! events {
         $(
             $crate::wire::macros::wire_struct!($(#[$meta])* $name { $($fields)* });
 
-            impl EventKind for $name {
+            impl FixedEvent for $name {
                 const CODE: u16 = $code;
                 const LEVEL: EventLevel = EventLevel::$level;
             }
@@ -14,33 +15,34 @@ macro_rules! events {
 
         #[allow(clippy::large_enum_variant)] // owned messages are as big as the biggest one (protocol.md §7.1)
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub enum Event {
+        pub enum EventKind {
             $($name($name),)*
             Text(Text),
         }
 
-        impl Event {
+        impl EventKind {
             pub fn level(&self) -> EventLevel {
                 return match self {
-                    $(Event::$name(_) => $name::LEVEL,)*
-                    Event::Text(text) => text.level,
+                    $(EventKind::$name(_) => $name::LEVEL,)*
+                    EventKind::Text(text) => text.level,
                 };
             }
 
             fn code(&self) -> u16 {
                 return match self {
-                    $(Event::$name(_) => $name::CODE,)*
-                    Event::Text(_) => 0,
+                    $(EventKind::$name(_) => $name::CODE,)*
+                    EventKind::Text(_) => 0,
                 };
             }
         }
 
-        impl Wire for Event {
+        /// Level, Code and Data.
+        impl Wire for EventKind {
             fn read(r: &mut Reader) -> Result<Self, MessageError> {
                 let level = EventLevel::read(r)?;
                 let event = match u16::read(r)? {
-                    0 => Event::Text(Text { level, text: EventText::read(r)? }),
-                    $($code => Event::$name($name::read(r)?),)*
+                    0 => EventKind::Text(Text { level, text: EventText::read(r)? }),
+                    $($code => EventKind::$name($name::read(r)?),)*
                     code => return Err(MessageError::UnknownCode { kind: "EventCode", value: code }),
                 };
                 if event.level() != level {
@@ -53,8 +55,8 @@ macro_rules! events {
                 self.level().write(w);
                 self.code().write(w);
                 match self {
-                    $(Event::$name(event) => event.write(w),)*
-                    Event::Text(text) => text.text.write(w),
+                    $(EventKind::$name(event) => event.write(w),)*
+                    EventKind::Text(text) => text.text.write(w),
                 }
             }
         }

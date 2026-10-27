@@ -919,7 +919,8 @@ common/src/
                   enum Message { Hello(..), Sticks(..), Arm(..), ... } + encode / decode; Answer; Request; MessageError
     reply.rs      building a Reply (its struct is in the message list): Reply::to(&request, outcome),
                   Reply::to_invalid(&packet) for "malformed" / "unknown type"; Outcome; the shared Reason table
-    event.rs      the list of events (Armed, BatteryLow { millivolts }, ...) with code and level, written once;
+    event.rs      the list of events (Armed, BatteryLow { millivolts }, ...) with code and level, written once, and
+                  EventKind over them; EventId; the Event message (ID + EventKind) is in message.rs' list;
                   Text with EventText, a string that needs no heap
     payload.rs    (private) Wire: how each field reads and writes itself; Code: enums stored as numbers
     macros/       (private) code!, wire_struct!, messages!, events!: turn those lists into types
