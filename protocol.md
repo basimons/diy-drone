@@ -731,14 +731,15 @@ The drone records detailed data (sensors, PID internals, motor outputs) to its S
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|           Request ID          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |  First Log ID |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 where:
 
 - **Request ID (RID):** 2 bytes, u16.
+- **First Log ID:** 1 byte, u8. List logs from this Log ID up; 0 lists from the start.
 
 **LogList** (`0x71`, D→C):
 
@@ -746,16 +747,17 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|           Request ID          |   Log Entry list (variable)   :
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+                               +
-:                                                               |
+|           Request ID          |   Remaining   |               :
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+               +
+:                   Log Entry list (variable)                   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 where:
 
 - **Request ID (RID):** 2 bytes, u16. The ListLogs it answers.
-- **Log Entry list:** variable length, zero or more [Log Entry]. If they don't all fit in one message, the drone sends several LogList messages with the same Request ID.
+- **Remaining:** 1 byte, u8. How many logs come after this list (0: this is the last page).
+- **Log Entry list:** variable length, 0 to 49 [Log Entry] (what fits in 255), sorted by Log ID, starting at the first log whose Log ID ≥ First Log ID.
 
 A **Log Entry**:
 
@@ -816,7 +818,8 @@ where:
 Rules:
 
 - **Log IDs are 1 byte**, so the drone lists at most 255 logs (the newest ones; 0 is never used). Older logs stay on the SD card and can be fetched over WiFi as files.
-- The client asks by **position**, so a lost chunk is just asked for again; the drone keeps no download state.
+- The client asks by **position**, so a lost chunk or page is just asked for again; the drone keeps no download state.
+- **Listing more than one page:** if Remaining is not 0, the client sends a new ListLogs (new Request ID) with First Log ID one past the last Log ID it got. Each ListLogs gets exactly one LogList, so pages of two lists in flight never mix: each carries its own Request ID.
 - An Offset exactly at the end returns a LogChunk with no Data (the end of the log); an Offset past the end is refused with Reason 13.
 - What goes into a log and its file format: out of scope here.
 
