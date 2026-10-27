@@ -53,14 +53,23 @@ pub enum ArmSwitch {
 }
 
 /// What the drone reports about itself at a glance (the Status stream, protocol.md §5.6). No `Default`: it is only
-/// built once the battery and IMU have been read.
+/// built once the battery has been read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DroneStatus {
     pub arm_state: ArmState,
     pub flight_mode: FlightMode,
     pub battery: BatteryPercent,
     pub protection: Option<ProtectionCause>, // the cause that triggered it, if several are active
-    pub imu_error: bool,
+    pub imu: ImuState,
+}
+
+/// The IMU (gyro and accelerometer). Only `Ready` may arm: Arm is refused "IMU not ready" otherwise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum ImuState {
+    #[default]
+    Starting, // starting up or calibrating: measuring the sensor's offset while the drone stands still
+    Ready,
+    Error, // also sent as the IMU error event (protocol.md §5.4)
 }
 
 /// Estimated charge left, 0 … 100 %. The drone works it out from the pack voltage; when it counts as low, it says so

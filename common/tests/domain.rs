@@ -1,5 +1,5 @@
 use drone_common::domain::{
-    ArmState, ArmSwitch, BatteryPercent, CHANNEL_COUNT, FlightMode, LinkHealth, RcChannels, Uptime,
+    ArmState, ArmSwitch, BatteryPercent, CHANNEL_COUNT, FlightMode, ImuState, LinkHealth, RcChannels, Uptime,
 };
 
 #[test]
@@ -21,6 +21,11 @@ fn flying_is_armed_too() {
     assert!(!ArmState::Disarmed.is_armed());
     assert!(ArmState::ArmedOnGround.is_armed());
     assert!(ArmState::Flying.is_armed());
+}
+
+#[test]
+fn the_imu_starts_not_ready() {
+    assert_eq!(ImuState::default(), ImuState::Starting);
 }
 
 #[test]
