@@ -85,7 +85,7 @@ where:
 
 - **Flags (F):** 1 byte. Bit 0 = "auth tag present". Bits 1–7 reserved. For now F == 0; until authentication exists, a receiver drops any packet with F != 0.
 - **Type (T):** 1 byte. Message type, see §5. 256 values; if more are ever needed, that is a new protocol version.
-- **Sequence (Seq):** 2 bytes, u16. Counter per direction, +1 for every message sent (resends too), wraps 65535 → 0. Detects lost messages (gaps), a frozen sender (counter stops), stale messages (over WiFi: older than the newest seen → dropped), and later replay. It is **not** used to re-sort messages and **not** used to match replies (that is the Request ID, §5.0).
+- **Sequence (Seq):** 2 bytes, u16. Counter per direction, +1 for every message sent (resends too), wraps 65535 → 0. Detects lost messages (gaps), a frozen sender (counter stops), stale messages (over WiFi: a message that may be lost, §5.0a, older than the newest seen → dropped), and later replay. The receiver reports which Sequences arrived with Ack (§5.0a). It is **not** used to re-sort messages and **not** used to match answers to requests (that is the Request ID, §5.0).
 - **Payload:** variable length, layout depends on T (§5). Requests and their answers start their payload with a Request ID (§5.0); other messages (Sticks, Hello, Ping, Event, …) don't have one.
 - **Auth Tag:** present only when F bit 0 is set. Length and algorithm defined by a future protocol version. Absent for now.
 - **CRC-16 (CRC):** 2 bytes. Over every byte before it (Flags through Auth Tag). Variant CRC-16/CCITT-FALSE: polynomial 0x1021, init 0xFFFF, no reflection, no final XOR.
@@ -112,7 +112,7 @@ How packets travel depends on the link:
 
 | Range | Topic | Types |
 |-------|-------|-------|
-| `0x01–0x0F` | Connection | `0x01` Hello, `0x02` HelloReply, `0x03` Ping, `0x04` Pong, `0x05` LinkTest, `0x06` LinkTestData, `0x07` LinkTestResult |
+| `0x01–0x0F` | Connection | `0x01` Hello, `0x02` HelloReply, `0x03` Ping, `0x04` Pong, `0x05` LinkTest, `0x06` LinkTestData, `0x07` LinkTestResult, `0x08` Ack |
 | `0x10–0x1F` | Control | `0x10` Sticks |
 | `0x20–0x3F` | Commands | `0x20` Arm, `0x21` Disarm, `0x22` TakeOff, `0x23` Land, `0x24` GoHome, `0x25` Flip, `0x26` SteadyState, `0x27` ExitSteadyState |
 | `0x40–0x4F` | Replies & events | `0x40` Reply, `0x41` Event |
@@ -127,20 +127,54 @@ Direction: C→D = client (laptop) to drone, D→C = drone to client. The diagra
 - A **request** is any C→D message except Sticks, Hello, Ping and LinkTestData: commands, LinkTest, SetSettings, GetSettings, Subscribe, RequestOnce, ListLogs, ReadLog.
 - Every request payload **starts with a Request ID (u16)**, the client picks it by counting up its requests (wrapping 65535 → 0; every value is valid). It tells the drone "this is the same request as before" and lets the client match answers to requests. It is separate from the packet Sequence.
 - Every request gets **exactly one answer**: its data message (LinkTestResult, Settings, StreamData, LogList, LogChunk, which echo the Request ID), or a Reply. Errors (unknown stream/group/log ID, bad rate, refused) are always a Reply.
-- **Resending:** if no answer arrives within a timeout, the client resends the request with the **same Request ID** (and a new Sequence). The drone remembers the last 16 Request IDs it handled; a repeat is answered again without executing twice.
+- **Resending** works the same way in both directions (§5.0a). A resent request keeps its **Request ID** and gets a new Sequence. The drone remembers the last 16 Request IDs it handled; a repeat is acknowledged but not executed twice.
 - Data the drone sends without being asked (default and subscribed streams) is a **StreamUpdate**, which has no Request ID. Whether data answers a request is told by its message type, not by a special Request ID value.
 - The Request ID is 2 bytes (not 1) so that many requests in flight (e.g. pipelined ReadLog over WiFi) never wrap into IDs the drone still remembers.
 
 Example:
 
 ```
-seq 100  Sticks
-seq 101  Flip, Request ID 7
-seq 102  Sticks
-...      (Reply lost)
-seq 150  Flip, Request ID 7   ← resend: new Sequence, same Request ID
-         drone: already did 7 → sends the Reply again, does not flip twice
+C→D seq 101  Flip, Request ID 7
+D→C seq 40   Reply to Request ID 7: OK   ← lost
+D→C seq 41   Ack, Largest Received 101   ← lost
+C→D seq 106  Flip, Request ID 7          ← resend: new Sequence, same Request ID
+             drone: already did 7 → acknowledges 106, does not flip twice
+D→C seq 43   Reply to Request ID 7: OK   ← the drone resends its Reply too: seq 40 was never acknowledged
 ```
+
+### 5.0a Delivery: acknowledgements and resending
+
+This works like QUIC (the protocol under HTTP/3), not like TCP: nothing waits for a lost message, and a resend is a new packet with a new Sequence, so every Sequence is sent only once. **Both sides follow the same rules.**
+
+- **Reliable messages** must arrive: requests, their answers (Reply and the data messages that answer a request) and Events. The sender keeps each one until it is acknowledged, and resends it when it is lost.
+- **Everything else may be lost** and is never resent: Sticks, StreamUpdate, Ping, Pong, LinkTestData and Ack. The next one replaces it; for LinkTestData the losses are what is being measured. Hello and HelloReply are the exception: the client resends Hello until a HelloReply arrives.
+- **Acknowledging:** a side that receives a reliable message sends an **Ack** (below) within 20 ms. One Ack covers every Sequence received so far, reliable or not, so one Ack can acknowledge several messages. An Ack is only sent when a reliable message is waiting to be acknowledged. Acks are never acknowledged or resent: the next Ack repeats what a lost one said.
+- **An answer acknowledges its request too**, so the client stops resending a request once its answer arrives, even if the Ack was lost.
+- **Lost:** the sender counts a reliable message as lost when
+  - a message sent 3 or more Sequences after it has been acknowledged (on a byte stream messages arrive in order; over UDP they may not, and 3 leaves room for that), or
+  - no Ack covers it within the **probe timeout**: smoothed RTT + max(4 × RTT variation, 1 ms) + 20 ms. Each probe timeout in a row doubles it; an Ack resets it.
+- **Resending:** a lost message is sent again with a new Sequence and its ID unchanged: the Request ID, or the Event ID of an Event. The receiver recognises the ID and doesn't act twice: the drone remembers the last 16 Request IDs, the client the last 16 Event IDs and the Request IDs it got answers for.
+- **Round-trip time (RTT):** when an Ack's Largest Received is a reliable message not acknowledged before, RTT sample = now − when that message was sent − Ack Delay. A resend has its own Sequence, so a sample can't be mistaken for an earlier copy (TCP's problem). As in QUIC (RFC 9002): smoothed RTT = ⅞ smoothed RTT + ⅛ sample, RTT variation = ¾ RTT variation + ¼ |smoothed RTT − sample|. Until the first sample: the Ping/Pong round trip if there is one, else 100 ms.
+- **At most 16 unacknowledged requests at once.** The drone remembers 16 Request IDs, so a request the client may still resend is always among them and is never executed twice.
+- **Giving up:** TakeOff and Flip expire after 300 ms (§5.3). Everything else is resent until it is acknowledged, the link is declared lost (§6 rule 4), or a new Hello starts a new session; nothing from an old session is resent.
+
+**Ack** (`0x08`, either direction):
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|        Largest Received       |           Ack Delay           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Received Before                        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Largest Received (LR):** 2 bytes, u16. The newest Sequence received from the other side (compared with wrapping arithmetic).
+- **Ack Delay (AD):** 2 bytes, u16, in µs. Time from receiving Largest Received to sending this Ack. The other side subtracts it from its RTT sample.
+- **Received Before (RB):** 4 bytes, u32, bit field. Bit n (bit 0 is the lowest) set means Sequence Largest Received − 1 − n arrived too, so one Ack covers 33 Sequences. A reliable message older than that and not yet acknowledged is lost by the rule above.
 
 ### 5.1 Connection
 
@@ -335,7 +369,7 @@ Values are stick positions, not distances; the flight code decides what they mea
 
 ### 5.3 Commands
 
-**Arm** (`0x20`), **Disarm** (`0x21`), **TakeOff** (`0x22`), **Land** (`0x23`), **GoHome** (`0x24`), **SteadyState** (`0x26`), **ExitSteadyState** (`0x27`), all C→D:
+**Arm** (`0x20`), **Disarm** (`0x21`), **Land** (`0x23`), **GoHome** (`0x24`), **SteadyState** (`0x26`), **ExitSteadyState** (`0x27`), all C→D:
 
 ```
  0               1               2               3
@@ -349,13 +383,32 @@ where:
 
 - **Request ID (RID):** 2 bytes, u16. See §5.0.
 
+**TakeOff** (`0x22`, C→D):
+
+```
+ 0               1               2               3
+ 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Request ID          |            Sent At            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            (cont.)            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+where:
+
+- **Request ID (RID):** 2 bytes, u16.
+- **Sent At (SA):** 4 bytes, u32. Client's session clock in µs when the pilot gave the command. A resend keeps it.
+
 **Flip** (`0x25`, C→D):
 
 ```
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|           Request ID          |           Direction           |
+|           Request ID          |            Sent At            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            (cont.)            |           Direction           |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |            Duration           |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -364,10 +417,13 @@ where:
 where:
 
 - **Request ID (RID):** 2 bytes, u16.
+- **Sent At (SA):** 4 bytes, u32. Client's session clock in µs when the pilot gave the command. A resend keeps it.
 - **Direction (Dir):** 2 bytes, u16. 0 = forward, increasing clockwise seen from above, one full circle over 0 … 65535.
 - **Duration (Dur):** 2 bytes, u16. How long the flip takes, in ms (quick ≈ 300, slow ≈ 1500).
 
 GoHome is reserved until GPS is fitted; until then the drone answers "not supported". Every command gets a Reply (§5.0).
+
+**TakeOff and Flip expire.** Carried out late, after resends, they would surprise the pilot, perhaps close to the ground. The drone refuses one that is more than **300 ms** old with Reason 14 "too late". Age = the drone's session clock − Sent At, as a signed wrapping difference. The drone's clock runs behind the client's by the one-way delay, so a fresh command can look a few ms in the future: a negative age counts as fresh. The client also stops resending these two after 300 ms and tells the pilot. Every other command is carried out however late it arrives: a late Disarm or Land is still what the pilot wanted.
 
 **SteadyState** asks the drone to hold still where it is (level, holding height; without GPS it may drift sideways) and, while it does, to accept only a small set of requests. **ExitSteadyState** returns to normal flying. The client keeps sending Sticks as its heartbeat; while in steady state the drone ignores their values. Which requests are allowed in steady state (e.g. LinkTest, GetSettings, RequestOnce, Subscribe, Land, Disarm, ExitSteadyState) is drone-side logic, to be decided later; other requests get a Reply "not allowed now" (§5.4).
 
@@ -407,6 +463,7 @@ where:
 | 11 | rate not possible |
 | 12 | unknown log |
 | 13 | offset past the end |
+| 14 | too late: the command is older than its expiry (§5.3) |
 
 Reasons 8–13 belong to requests that `drone-common` doesn't implement yet; it adds a reason together with the first request that uses it.
 
@@ -416,10 +473,10 @@ What a Reply may say depends on the request:
 |---------|---------|-----------------|
 | Arm | Reply OK | 4 battery low, 5 throttle not low, 6 IMU not ready, 7 arm switch off |
 | Disarm | Reply OK | never refused: disarming must always work |
-| TakeOff | Reply OK | 1 not armed, 4 battery low |
+| TakeOff | Reply OK | 1 not armed, 4 battery low, 14 too late |
 | Land | Reply OK | 2 not flying |
 | GoHome | Reply OK | none yet ("not supported" until GPS is fitted) |
-| Flip | Reply OK | 1 not armed, 2 not flying, 3 too low |
+| Flip | Reply OK | 1 not armed, 2 not flying, 3 too low, 14 too late |
 | SteadyState | Reply OK | 2 not flying |
 | ExitSteadyState | Reply OK | never refused |
 | SetSettings | Reply OK | 8 unknown group, 9 value out of range |
@@ -446,23 +503,26 @@ Rules:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|     Level     |              Code             |               :
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+               :
-:                        Data (variable)                        |
+|            Event ID           |     Level     |      Code     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    (cont.)    |                Data (variable)                :
++-+-+-+-+-+-+-+-+                                               :
+:                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 where:
 
+- **Event ID (EID):** 2 bytes, u16. The drone counts its events up (wrapping 65535 → 0). A resend keeps it, so the client shows each event once (§5.0a).
 - **Level (L):** 1 byte. One of: 0 = debug, 1 = info, 2 = warning, 3 = error. Fixed per Code (table below); only a Text event chooses its own.
 - **Code (C):** 2 bytes, u16. What happened, from the table below. 0 = Text.
-- **Data:** variable length, 0 … 246 bytes, the rest of the payload; layout per Code. Most events have none.
+- **Data:** variable length, 0 … 244 bytes, the rest of the payload; layout per Code. Most events have none.
 
 Events (the high byte of the Code groups them):
 
 | Code | Event | Level | Data |
 |------|-------|-------|------|
-| `0x0000` | Text | any | Text: 1 … 246 bytes of UTF-8. Where "any string from the drone" goes. |
+| `0x0000` | Text | any | Text: 1 … 244 bytes of UTF-8. Where "any string from the drone" goes. |
 | `0x0101` | Armed | info | none |
 | `0x0102` | Disarmed | info | none |
 | `0x0201` | Link lost | warning | none |
@@ -479,17 +539,20 @@ Events (the high byte of the Code groups them):
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|     Level     |              Code             |               :
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+               :
-:                        Text (variable)                        |
+|            Event ID           |     Level     |      Code     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    (cont.)    |                Text (variable)                :
++-+-+-+-+-+-+-+-+                                               :
+:                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 where:
 
+- **Event ID (EID):** 2 bytes, u16.
 - **Level (L):** 1 byte, any level.
 - **Code (C):** 2 bytes, u16, 0.
-- **Text:** variable length, 1 … 246 bytes of UTF-8.
+- **Text:** variable length, 1 … 244 bytes of UTF-8.
 
 **Battery low** (`0x0301`) and **Battery critical** (`0x0302`):
 
@@ -497,14 +560,15 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|     Level     |              Code             |   Millivolts  |
+|            Event ID           |     Level     |      Code     |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|    (cont.)    |
-+-+-+-+-+-+-+-+-+
+|    (cont.)    |           Millivolts          |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 where:
 
+- **Event ID (EID):** 2 bytes, u16.
 - **Level (L):** 1 byte. Warning for Battery low, error for Battery critical.
 - **Code (C):** 2 bytes, u16. `0x0301` or `0x0302`.
 - **Millivolts:** 2 bytes, u16. Voltage of the whole pack.
@@ -515,12 +579,15 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|     Level     |              Code             |     Cause     |
+|            Event ID           |     Level     |      Code     |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    (cont.)    |     Cause     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 where:
 
+- **Event ID (EID):** 2 bytes, u16.
 - **Level (L):** 1 byte, error.
 - **Code (C):** 2 bytes, u16, `0x0401`.
 - **Cause:** 1 byte. One of: 1 = link loss, 2 = client frozen, 3 = low battery, 4 = loop overrun. 0 is never used.
@@ -531,14 +598,17 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|     Level     |              Code             |      Late     |
+|            Event ID           |     Level     |      Code     |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                    (cont.)                    |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    (cont.)    |                      Late                     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    (cont.)    |
++-+-+-+-+-+-+-+-+
 ```
 
 where:
 
+- **Event ID (EID):** 2 bytes, u16.
 - **Level (L):** 1 byte, error.
 - **Code (C):** 2 bytes, u16, `0x0402`.
 - **Late:** 4 bytes, u32, in µs. How late the loop run finished.
@@ -869,9 +939,9 @@ common/src/
 
 **`drone-link`: behaviour both sides need.** Depends on `drone-common`, never the other way around (Rust forbids circular dependencies between crates, so the boundary enforces itself). Created when its first piece is needed.
 
-- Sequence-gap counting, session-clock helpers, a generic "remember the last N Request IDs", the auth tag computation (later).
+- Sequence-gap counting, the delivery bookkeeping of §5.0a (what to acknowledge, what is lost, the RTT estimate; the caller passes in the time), session-clock helpers, a generic "remember the last N IDs" (Request IDs, Event IDs), the auth tag computation (later).
 
-**Stays in `fc` / `client`:** deciding whether to obey a request, resend timers, link-loss timeouts, the handshake state machine, and all I/O (serial ports, sockets, clocks).
+**Stays in `fc` / `client`:** deciding whether to obey a request, the clocks and timers that drive `drone-link`, link-loss timeouts, the handshake state machine, and all I/O (serial ports, sockets, clocks).
 
 ### 7.1 Decisions
 
@@ -888,7 +958,7 @@ common/src/
 
 ## 8. Open risks
 
-- **Airport throughput is unknown.** 50 Hz Sticks ≈ 16 B × 50 = 800 B/s plus streams. Measure on the bench with LinkTest (§5.1a), both directions. Fallbacks: send Sticks at 25 Hz, fewer streams in flight, 12-bit axes in a new version.
+- **Airport throughput is unknown.** 50 Hz Sticks ≈ 16 B × 50 = 800 B/s plus streams, plus 16 B per Ack (only sent when a reliable message arrived). Measure on the bench with LinkTest (§5.1a), both directions. Fallbacks: send Sticks at 25 Hz, fewer streams in flight, 12-bit axes in a new version.
 
 - **Possible later: separate radio and WiFi modes**, chosen in the handshake (an option bit), so WiFi can use bigger messages and fields (e.g. message size, Request ID width) while radio stays small. Not now: one format for all links.
 
@@ -896,4 +966,4 @@ common/src/
 
 - CRSF channel → internal state mapping (which AUX channel is arm, flip, etc.).
 - Exact stream field layouts and settings group layouts beyond what is listed.
-- Command resend timeout and default stream rates.
+- Default stream rates. The 20 ms ack delay, 300 ms expiry and 100 ms starting RTT are first guesses, to be measured.
