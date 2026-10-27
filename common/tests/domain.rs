@@ -1,4 +1,6 @@
-use drone_common::domain::{ArmSwitch, CHANNEL_COUNT, FlightMode, LinkHealth, RcChannels, Uptime};
+use drone_common::domain::{
+    ArmSwitch, BatteryLevel, BatteryPercent, CHANNEL_COUNT, FlightMode, LinkHealth, RcChannels, Uptime,
+};
 
 #[test]
 fn rc_channels_are_11_bit() {
@@ -18,6 +20,21 @@ fn arm_switch_starts_off() {
 fn flight_mode_starts_in_rate() {
     // protocol.md §5.3: rate needs only the gyro, so it works from boot.
     assert_eq!(FlightMode::default(), FlightMode::Rate);
+}
+
+#[test]
+fn battery_percent_is_0_to_100() {
+    for percent in [0, 1, 50, 100] {
+        assert_eq!(BatteryPercent::new(percent).map(|p| return p.value()), Some(percent));
+    }
+    assert_eq!(BatteryPercent::new(101), None);
+    assert_eq!(BatteryPercent::new(u8::MAX), None);
+}
+
+#[test]
+fn battery_level_gets_worse_from_ok_to_critical() {
+    assert!(BatteryLevel::Ok < BatteryLevel::Low);
+    assert!(BatteryLevel::Low < BatteryLevel::Critical);
 }
 
 #[test]

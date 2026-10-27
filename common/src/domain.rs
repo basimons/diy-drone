@@ -42,6 +42,40 @@ pub enum ArmSwitch {
     On,
 }
 
+/// What the drone reports about itself at a glance (the Status stream, protocol.md §5.6). No `Default`: it is only
+/// built once the battery and IMU have been read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DroneStatus {
+    pub arm_state: ArmState,
+    pub flight_mode: FlightMode,
+    pub battery_level: BatteryLevel,
+    pub failsafe: Option<FailsafeCause>, // the cause that triggered it, if several are active
+    pub imu_error: bool,
+}
+
+/// The drone's judgement of the battery; where Low and Critical start is up to the flight code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BatteryLevel {
+    Ok,
+    Low,      // warn the pilot
+    Critical, // land or disarm now
+}
+
+/// Estimated charge left, 0 … 100 %. The drone works it out from the pack voltage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BatteryPercent(u8);
+
+impl BatteryPercent {
+    /// `None` above 100.
+    pub fn new(percent: u8) -> Option<Self> {
+        return if percent <= 100 { Some(Self(percent)) } else { None };
+    }
+
+    pub fn value(&self) -> u8 {
+        return self.0;
+    }
+}
+
 /// A point in time on this side's own clock, in µs since it started. A u64 never wraps (585 000 years), unlike the
 /// protocol's u32 session clock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -110,6 +144,9 @@ pub use crate::wire::message::Sticks;
 
 /// What the sticks mean (protocol.md §5.3). Defined with the messages, since SetFlightMode carries it.
 pub use crate::wire::message::FlightMode;
+
+/// Why a failsafe took over. Defined with the events, since the Failsafe triggered event carries it.
+pub use crate::wire::event::FailsafeCause;
 
 /// What the pilot asks the drone to do (protocol.md §5.3), whichever protocol it came over. Defined with the messages,
 /// since each command message is this plus its Request ID and Sent At.
