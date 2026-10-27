@@ -118,7 +118,7 @@ pub const COMMAND_EXPIRY_US: u32 = 300_000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CommandRequest {
     pub request_id: RequestId,
-    pub sent_at: u32, // client's session clock in µs when the pilot gave the command; a resend keeps it
+    pub sent_at: u32, // as in the command messages
     pub command: Command,
 }
 

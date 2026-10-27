@@ -1,6 +1,8 @@
 mod support;
 
+use drone_common::wire::event::{Armed, Event, EventId, EventKind};
 use drone_common::wire::message::*;
+use drone_common::wire::reply::{Outcome, Reply};
 use support::*;
 
 const FLIP: u8 = 0x25;
@@ -23,7 +25,8 @@ const ALL: [Command; 8] = [
 ];
 
 /// The type byte, the message and the payload of `command` with Request ID 7 and Sent At 0x04030201. No `_` arm: a
-/// new command doesn't compile until it is added here (and to `ALL`).
+/// new command doesn't compile until it is added here, and `all_lists_every_command_the_library_knows` fails until it
+/// is in `ALL`.
 fn expected(command: Command) -> (u8, Message, Vec<u8>) {
     let request_id = RequestId(7);
     let sent_at = 0x0403_0201;
@@ -117,10 +120,30 @@ fn other_messages_are_no_command() {
             ack_delay_us: 0,
             received_before: 0,
         }),
+        Message::Reply(Reply {
+            request_id: RequestId(1),
+            answer: Answer::Arm(Outcome::Ok),
+        }),
+        Message::Event(Event {
+            event_id: EventId(1),
+            kind: EventKind::Armed(Armed),
+        }),
     ];
     for message in others {
         assert_eq!(message.command(), None);
     }
+}
+
+#[test]
+fn all_lists_every_command_the_library_knows() {
+    let decodes_to_a_command = |message_type: u8| {
+        return [6, 10].into_iter().any(|len| {
+            return decode_payload(message_type, &vec![0; len]).is_ok_and(|m| return m.command().is_some());
+        });
+    };
+    let library: Vec<u8> = (0..=u8::MAX).filter(|&t| return decodes_to_a_command(t)).collect();
+    let listed: Vec<u8> = ALL.into_iter().map(|command| return expected(command).0).collect();
+    assert_eq!(library, listed);
 }
 
 #[test]

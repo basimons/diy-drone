@@ -4,7 +4,8 @@
 /// ID, its Sent At, then the fields listed, which are the command's own and shared with its `Command` variant. Only doc
 /// comments go on a command, since they are copied to both. `expires` marks a command the drone refuses as too late;
 /// its `refused` must include `TooLate`. `refused` lists the `Reason`s it may be refused for, as its own enum; one
-/// without `refused` is never refused.
+/// without `refused` is never refused. Requests that are not commands (LinkTest, settings, logs) will be a second
+/// list in this same call: `RequestType`, `Answer` and `TypeKind` must each be generated once, over all requests.
 macro_rules! messages {
     (@refusal) => { ::core::convert::Infallible };
     (@refusal $refusal:ident) => { $refusal };
