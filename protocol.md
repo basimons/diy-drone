@@ -809,7 +809,7 @@ where:
 
 Rules:
 
-- After a successful handshake, the drone starts a **default set** (the glance screen) without being asked, sent as StreamUpdate: status, battery, attitude, height, link quality, at a few Hz. Exact rates: to be decided.
+- After a successful handshake, the drone starts a **default set** (the glance screen) without being asked, sent as StreamUpdate: status (with the battery), attitude, height, link quality, at a few Hz. Exact rates: to be decided.
 - Streams can be subscribed, changed and stopped during flight.
 - Stream data uses **fixed-point whole numbers** (exact, small), e.g. mV, centidegrees, cm.
 
@@ -817,13 +817,12 @@ First streams (field layouts defined in `drone-common`, units as given):
 
 | ID | Stream | Units |
 |----|--------|-------|
-| 1 | Status: armed, flight mode, battery level (ok / low / critical), failsafe cause, IMU error | — |
-| 2 | Battery: estimated charge left, from the pack voltage | % (0 … 100) |
-| 3 | Attitude (roll, pitch, yaw) | 0.01° |
-| 4 | Height | cm |
-| 5 | Raw IMU (accel, gyro) | sensor units, documented per field |
-| 6 | GPS (reserved, later) | 1e-7° lat/lon |
-| 7 | Link quality (good/dropped frame counts) | — |
+| 1 | Status: armed, flight mode, battery (estimated charge left, from the pack voltage), failsafe cause, IMU error | battery in % (0 … 100) |
+| 2 | Attitude (roll, pitch, yaw) | 0.01° |
+| 3 | Height | cm |
+| 4 | Raw IMU (accel, gyro) | sensor units, documented per field |
+| 5 | GPS (reserved, later) | 1e-7° lat/lon |
+| 6 | Link quality (good/dropped frame counts) | — |
 
 ### 5.7 Logs
 
@@ -944,7 +943,7 @@ Two shared crates, both `no_std` (no operating system or heap needed) so the fli
 common/src/
   domain.rs    internal state: Sticks, Command, ArmState, ArmSwitch, FlightMode, LinkHealth (with Uptime, this
                side's own clock), RcChannels (raw CRSF channel values); what the drone reports: DroneStatus
-               (with BatteryLevel and FailsafeCause, re-exported), BatteryPercent; later settings values, attitude, height
+               (with BatteryPercent; FailsafeCause re-exported); later settings values, attitude, height
   wire/        our protocol
     crc16.rs      (private)
     cobs.rs       (private)

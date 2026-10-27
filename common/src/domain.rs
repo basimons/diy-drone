@@ -48,20 +48,13 @@ pub enum ArmSwitch {
 pub struct DroneStatus {
     pub arm_state: ArmState,
     pub flight_mode: FlightMode,
-    pub battery_level: BatteryLevel,
+    pub battery: BatteryPercent,
     pub failsafe: Option<FailsafeCause>, // the cause that triggered it, if several are active
     pub imu_error: bool,
 }
 
-/// The drone's judgement of the battery; where Low and Critical start is up to the flight code.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum BatteryLevel {
-    Ok,
-    Low,      // warn the pilot
-    Critical, // land or disarm now
-}
-
-/// Estimated charge left, 0 … 100 %. The drone works it out from the pack voltage.
+/// Estimated charge left, 0 … 100 %. The drone works it out from the pack voltage; when it counts as low, it says so
+/// with the Battery low and Battery critical events (protocol.md §5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BatteryPercent(u8);
 

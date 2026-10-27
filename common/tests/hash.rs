@@ -49,7 +49,6 @@ fn public_types_are_hashable() {
         key_type::<Heard>(),
         key_type::<RcChannels>(),
         key_type::<DroneStatus>(),
-        key_type::<BatteryLevel>(),
         key_type::<BatteryPercent>(),
         key_type::<FlightMode>(),
         key_type::<HelloResult>(),

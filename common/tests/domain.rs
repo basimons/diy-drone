@@ -1,6 +1,4 @@
-use drone_common::domain::{
-    ArmSwitch, BatteryLevel, BatteryPercent, CHANNEL_COUNT, FlightMode, LinkHealth, RcChannels, Uptime,
-};
+use drone_common::domain::{ArmSwitch, BatteryPercent, CHANNEL_COUNT, FlightMode, LinkHealth, RcChannels, Uptime};
 
 #[test]
 fn rc_channels_are_11_bit() {
@@ -29,12 +27,6 @@ fn battery_percent_is_0_to_100() {
     }
     assert_eq!(BatteryPercent::new(101), None);
     assert_eq!(BatteryPercent::new(u8::MAX), None);
-}
-
-#[test]
-fn battery_level_gets_worse_from_ok_to_critical() {
-    assert!(BatteryLevel::Ok < BatteryLevel::Low);
-    assert!(BatteryLevel::Low < BatteryLevel::Critical);
 }
 
 #[test]
