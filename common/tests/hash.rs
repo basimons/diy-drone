@@ -18,6 +18,7 @@ fn public_types_are_hashable() {
         key_type::<Hello>(),
         key_type::<HelloReply>(),
         key_type::<Options>(),
+        key_type::<HelloOptions>(),
         key_type::<Ping>(),
         key_type::<Pong>(),
         key_type::<Arm>(),

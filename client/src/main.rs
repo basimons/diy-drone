@@ -1,7 +1,6 @@
-use drone_common::{crsf, domain::RcChannels};
+use drone_common::crsf;
 
 fn main() -> anyhow::Result<()> {
-    println!("default channels: {:?}", RcChannels::default());
     println!("CRSF RC frame type: {:#04x}", crsf::FRAME_TYPE_RC_CHANNELS_PACKED);
 
     let ports = serialport::available_ports()?;

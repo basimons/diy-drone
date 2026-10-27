@@ -226,3 +226,9 @@ fn every_event_header_decodes_or_is_rejected() {
         }
     }
 }
+
+#[test]
+fn event_text_is_no_bigger_than_its_bytes_and_length() {
+    // Every Message is as big as the biggest one (protocol.md §7.1), and EventText is in the biggest.
+    assert_eq!(size_of::<EventText>(), MAX_EVENT_TEXT_LEN + 1);
+}
