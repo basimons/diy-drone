@@ -817,7 +817,7 @@ First streams (field layouts defined in `drone-common`, units as given):
 
 | ID | Stream | Units |
 |----|--------|-------|
-| 1 | Status: armed, flight mode, battery (estimated charge left, from the pack voltage), protection cause, IMU error | battery in % (0 … 100) |
+| 1 | Status: arm state (disarmed / armed / flying), flight mode, battery (estimated charge left, from the pack voltage), protection cause, IMU error | battery in % (0 … 100) |
 | 2 | Attitude (roll, pitch, yaw) | 0.01° |
 | 3 | Height | cm |
 | 4 | Raw IMU (accel, gyro) | sensor units, documented per field |
