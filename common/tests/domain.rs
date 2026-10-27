@@ -1,4 +1,4 @@
-use drone_common::domain::{ArmSwitch, CHANNEL_COUNT, CHANNEL_MID, LinkHealth, LocalTime, RcChannels};
+use drone_common::domain::{ArmSwitch, CHANNEL_COUNT, CHANNEL_MID, Heard, LinkHealth, RcChannels, Uptime};
 
 #[test]
 fn rc_channels_are_11_bit() {
@@ -21,34 +21,59 @@ fn arm_switch_starts_off() {
 
 #[test]
 fn link_health_starts_never_heard() {
-    let health = LinkHealth::default();
-    assert_eq!((health.last_valid(), health.last_change()), (None, None));
+    assert_eq!(LinkHealth::default().last_heard(), None);
+}
+
+fn heard(valid: u64, fresh: u64) -> Option<Heard> {
+    return Some(Heard {
+        valid: Uptime(valid),
+        fresh: Uptime(fresh),
+    });
 }
 
 #[test]
-fn the_first_message_is_also_a_change() {
-    let health = LinkHealth::default().heard(LocalTime(100));
-    assert_eq!(health.last_valid(), Some(LocalTime(100)));
-    assert_eq!(health.last_change(), Some(LocalTime(100)));
+fn the_first_message_counts_as_fresh() {
+    assert_eq!(
+        LinkHealth::default().heard_repeat(Uptime(100)).last_heard(),
+        heard(100, 100)
+    );
 }
 
 #[test]
-fn an_unchanged_message_only_moves_last_valid() {
+fn repeats_only_move_the_last_valid_message() {
     // protocol.md §6 rule 5: over CRSF the TX module repeats old values when the client freezes.
-    let health = LinkHealth::default().heard_change(LocalTime(100)).heard(LocalTime(200));
-    assert_eq!(health.last_valid(), Some(LocalTime(200)));
-    assert_eq!(health.last_change(), Some(LocalTime(100)));
+    let health = LinkHealth::default()
+        .heard_fresh(Uptime(100))
+        .heard_repeat(Uptime(200))
+        .heard_repeat(Uptime(300));
+    assert_eq!(health.last_heard(), heard(300, 100));
 }
 
 #[test]
-fn a_changed_message_moves_both() {
-    let health = LinkHealth::default().heard(LocalTime(100)).heard_change(LocalTime(300));
-    assert_eq!(health.last_valid(), Some(LocalTime(300)));
-    assert_eq!(health.last_change(), Some(LocalTime(300)));
+fn a_fresh_message_moves_both() {
+    let health = LinkHealth::default().heard_repeat(Uptime(100)).heard_fresh(Uptime(300));
+    assert_eq!(health.last_heard(), heard(300, 300));
 }
 
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "goes back")]
-fn local_time_going_back_is_a_bug() {
-    let _ = LinkHealth::default().heard(LocalTime(200)).heard(LocalTime(100));
+fn uptime_going_back_is_a_bug() {
+    let _ = LinkHealth::default()
+        .heard_repeat(Uptime(200))
+        .heard_repeat(Uptime(100));
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "goes back")]
+fn uptime_going_back_on_a_fresh_message_is_a_bug() {
+    let _ = LinkHealth::default().heard_fresh(Uptime(200)).heard_fresh(Uptime(100));
+}
+
+#[test]
+#[cfg(not(debug_assertions))]
+fn uptime_going_back_still_keeps_fresh_at_or_before_valid() {
+    let health = LinkHealth::default().heard_fresh(Uptime(200)).heard_repeat(Uptime(100));
+    assert_eq!(health.last_heard(), heard(100, 100));
 }

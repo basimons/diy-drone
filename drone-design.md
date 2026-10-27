@@ -100,7 +100,7 @@ Flight loop rules: `SCHED_FIFO` high priority, `mlockall`, no allocation/syscall
 ### Failsafes (built before the first prop goes on)
 - **Arming:** only while the transmitter's arm switch is on, with throttle low and a healthy IMU. The client can also send Arm, but it is refused unless the switch is on. Disarmed on boot.
 - **RC link loss:** no valid CRSF frame for >250 ms → disarm (later: controlled descent).
-- **Laptop program freeze/crash:** the TX module may keep sending stale values. The laptop program sends a counter on a spare channel that increments every frame; if it stops changing for >250 ms, the Pi treats it as link loss.
+- **Laptop program freeze/crash:** the TX module may keep sending stale values. The laptop program sends a counter on a spare channel that increments every frame; if it stops changing for >250 ms, the Pi triggers the same failsafe as for link loss (reported as cause "client frozen", protocol.md §5.4).
 - **Gamepad disconnect:** laptop program detects controller loss and sends disarm.
 - **Loop overrun:** flight loop misses deadlines or stalls → a watchdog on another core forces the motors to zero.
 - **Process crash/exit:** the PWM must fall to "motor off". Verify on the bench by killing the process.

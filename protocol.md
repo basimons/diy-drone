@@ -909,7 +909,7 @@ Two shared crates, both `no_std` (no operating system or heap needed) so the fli
 
 ```
 common/src/
-  domain.rs    internal state: Sticks, ArmState, ArmSwitch, LinkHealth (with LocalTime, this side's own clock),
+  domain.rs    internal state: Sticks, ArmState, ArmSwitch, LinkHealth (with Uptime, this side's own clock),
                RcChannels (raw CRSF channel values); later Command, flight mode, settings values
   wire/        our protocol
     crc16.rs      (private)

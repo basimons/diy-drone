@@ -49,53 +49,51 @@ pub enum ArmSwitch {
 }
 
 /// A point in time on this side's own clock, in µs since it started. A u64 never wraps (585 000 years), unlike the
-/// u32 session clock of the protocol.
+/// protocol's u32 session clock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct LocalTime(pub u64);
+pub struct Uptime(pub u64);
 
 /// When an adapter last heard from the client, the same for every protocol (protocol.md §3). The flight code
 /// decides from it when the link counts as lost (§6 rules 4 and 5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct LinkHealth {
-    heard: Option<Heard>,
+    last_heard: Option<Heard>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct Heard {
-    valid: LocalTime,   // the last valid message
-    changed: LocalTime, // the last message showing the client is alive; never after `valid`
+pub struct Heard {
+    pub valid: Uptime, // the last valid message
+    pub fresh: Uptime, // the last message showing the client is alive; never after `valid`
 }
 
 impl LinkHealth {
-    /// A valid message that may be a repeat. Over CRSF the TX module repeats the last values when the client
-    /// freezes, so only a changed counter channel is `heard_change` (§6 rule 5). The first message is a change.
-    pub fn heard(self, now: LocalTime) -> Self {
-        let changed = self.heard.map_or(now, |heard| return heard.changed);
-        return self.with(now, changed);
-    }
-
-    /// A valid message that shows the client is alive: over our protocol every message, over CRSF a changed counter.
-    pub fn heard_change(self, now: LocalTime) -> Self {
+    /// A valid message that shows the client is alive: over our protocol every message, over CRSF a changed
+    /// counter channel.
+    pub fn heard_fresh(self, now: Uptime) -> Self {
         return self.with(now, now);
     }
 
-    pub fn last_valid(&self) -> Option<LocalTime> {
-        return self.heard.map(|heard| return heard.valid);
+    /// A valid message that may repeat old values: over CRSF the TX module repeats the last frame when the client
+    /// freezes (§6 rule 5). The first message counts as fresh.
+    pub fn heard_repeat(self, now: Uptime) -> Self {
+        let fresh = self.last_heard.map_or(now, |heard| return heard.fresh);
+        return self.with(now, fresh);
     }
 
-    pub fn last_change(&self) -> Option<LocalTime> {
-        return self.heard.map(|heard| return heard.changed);
+    /// `None` until the first valid message.
+    pub fn last_heard(&self) -> Option<Heard> {
+        return self.last_heard;
     }
 
-    fn with(self, valid: LocalTime, changed: LocalTime) -> Self {
+    fn with(self, valid: Uptime, fresh: Uptime) -> Self {
         debug_assert!(
-            self.last_valid().is_none_or(|last| return last <= valid),
-            "local time goes back: {:?} after {valid:?}",
-            self.last_valid()
+            self.last_heard.is_none_or(|last| return last.valid <= valid),
+            "uptime goes back: {valid:?} after {:?}",
+            self.last_heard
         );
-        debug_assert!(changed <= valid, "changed after the last valid message");
+        let fresh = fresh.min(valid); // only differs if the clock went back, which the assert above reports
         return Self {
-            heard: Some(Heard { valid, changed }),
+            last_heard: Some(Heard { valid, fresh }),
         };
     }
 }
