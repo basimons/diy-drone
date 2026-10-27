@@ -3,56 +3,138 @@ mod support;
 use drone_common::wire::message::*;
 use support::*;
 
-const TAKE_OFF: u8 = 0x22;
 const FLIP: u8 = 0x25;
+const REPLY: u8 = 0x40;
 
-/// Every command whose payload is only the Request ID, with its type byte.
-fn simple(id: u16) -> [(Message, u8); 6] {
-    let request_id = RequestId(id);
-    return [
-        (Message::Arm(Arm { request_id }), 0x20),
-        (Message::Disarm(Disarm { request_id }), 0x21),
-        (Message::Land(Land { request_id }), 0x23),
-        (Message::GoHome(GoHome { request_id }), 0x24),
-        (Message::SteadyState(SteadyState { request_id }), 0x26),
-        (Message::ExitSteadyState(ExitSteadyState { request_id }), 0x27),
-    ];
+const FLIP_LEFT: Command = Command::Flip {
+    direction: 0xC000, // 270°: to the left
+    duration_ms: 300,
+};
+
+const ALL: [Command; 8] = [
+    Command::Arm,
+    Command::Disarm,
+    Command::TakeOff,
+    Command::Land,
+    Command::GoHome,
+    FLIP_LEFT,
+    Command::SteadyState,
+    Command::ExitSteadyState,
+];
+
+/// The type byte, the message and the payload of `command` with Request ID 7 and Sent At 0x04030201. No `_` arm: a
+/// new command doesn't compile until it is added here (and to `ALL`).
+fn expected(command: Command) -> (u8, Message, Vec<u8>) {
+    let request_id = RequestId(7);
+    let sent_at = 0x0403_0201;
+    let header = vec![0x07, 0x00, 0x01, 0x02, 0x03, 0x04];
+    return match command {
+        Command::Arm => (0x20, Message::Arm(Arm { request_id, sent_at }), header),
+        Command::Disarm => (0x21, Message::Disarm(Disarm { request_id, sent_at }), header),
+        Command::TakeOff => (0x22, Message::TakeOff(TakeOff { request_id, sent_at }), header),
+        Command::Land => (0x23, Message::Land(Land { request_id, sent_at }), header),
+        Command::GoHome => (0x24, Message::GoHome(GoHome { request_id, sent_at }), header),
+        Command::Flip { direction, duration_ms } => {
+            let flip = Flip {
+                request_id,
+                sent_at,
+                direction,
+                duration_ms,
+            };
+            let fields = [direction.to_le_bytes(), duration_ms.to_le_bytes()].concat();
+            (FLIP, Message::Flip(flip), [header, fields].concat())
+        }
+        Command::SteadyState => (0x26, Message::SteadyState(SteadyState { request_id, sent_at }), header),
+        Command::ExitSteadyState => (
+            0x27,
+            Message::ExitSteadyState(ExitSteadyState { request_id, sent_at }),
+            header,
+        ),
+    };
 }
 
-fn flip(request_id: u16, direction: u16, duration_ms: u16) -> Flip {
-    return Flip {
+fn request(request_id: u16, sent_at: u32, command: Command) -> CommandRequest {
+    return CommandRequest {
         request_id: RequestId(request_id),
-        sent_at: 0x0403_0201,
-        direction,
-        duration_ms,
+        sent_at,
+        command,
     };
 }
 
 #[test]
-fn commands_with_only_a_request_id() {
-    for (message, message_type) in simple(0x1234) {
-        check_round_trip(message, message_type, &[0x34, 0x12]);
+fn every_command_starts_with_request_id_and_sent_at() {
+    for command in ALL {
+        let (message_type, message, payload) = expected(command);
+        check_round_trip(message, message_type, &payload);
     }
 }
 
 #[test]
-fn take_off_message() {
-    let take_off = TakeOff {
-        request_id: RequestId(7),
-        sent_at: 0x0403_0201,
-    };
-    check_round_trip(
-        Message::TakeOff(take_off),
-        TAKE_OFF,
-        &[0x07, 0x00, 0x01, 0x02, 0x03, 0x04],
-    );
+fn flip_message() {
+    let (_, message, payload) = expected(FLIP_LEFT);
+    assert_eq!(payload, [0x07, 0x00, 0x01, 0x02, 0x03, 0x04, 0x00, 0xC0, 0x2C, 0x01]);
+    check_round_trip(message, FLIP, &payload);
 }
 
 #[test]
-fn flip_message() {
-    let flip = flip(7, 0xC000, 300); // 270°: to the left
-    let payload = [0x07, 0x00, 0x01, 0x02, 0x03, 0x04, 0x00, 0xC0, 0x2C, 0x01];
-    check_round_trip(Message::Flip(flip), FLIP, &payload);
+fn a_command_request_becomes_its_message_and_back() {
+    for command in ALL {
+        let (_, message, _) = expected(command);
+        let request = request(7, 0x0403_0201, command);
+        assert_eq!(Message::from(request), message);
+        assert_eq!(message.command(), Some(request));
+    }
+}
+
+#[test]
+fn request_id_and_sent_at_are_carried_unchanged() {
+    for (request_id, sent_at) in [(0u16, 0u32), (1, 2), (0xFFFF, u32::MAX), (0x8000, 0x8000_0000)] {
+        for command in ALL {
+            let (message_type, _, payload) = expected(command);
+            let payload = [&request_id.to_le_bytes()[..], &sent_at.to_le_bytes(), &payload[6..]].concat();
+            let request = request(request_id, sent_at, command);
+            check_round_trip(Message::from(request), message_type, &payload);
+            assert_eq!(
+                decode_payload(message_type, &payload).map(|m| return m.command()),
+                Ok(Some(request))
+            );
+        }
+    }
+}
+
+#[test]
+fn other_messages_are_no_command() {
+    let others = [
+        Message::Ping(Ping { timestamp: 1 }),
+        Message::Sticks(Sticks {
+            throttle: 0,
+            roll: 0,
+            pitch: 0,
+            yaw: 0,
+        }),
+        Message::Ack(Ack {
+            largest_received: 0,
+            ack_delay_us: 0,
+            received_before: 0,
+        }),
+    ];
+    for message in others {
+        assert_eq!(message.command(), None);
+    }
+}
+
+#[test]
+fn only_take_off_and_flip_expire() {
+    let expiring: Vec<Command> = ALL.into_iter().filter(|command| return command.expires()).collect();
+    assert_eq!(expiring, [Command::TakeOff, FLIP_LEFT]);
+}
+
+#[test]
+fn exactly_the_expiring_commands_can_be_refused_too_late() {
+    for command in ALL {
+        let reply = [&[0x00, 0x00, expected(command).0, 1][..], &14u16.to_le_bytes()].concat(); // Refused, too late
+        assert_eq!(decode_payload(REPLY, &reply).is_ok(), command.expires(), "{command:?}");
+    }
 }
 
 #[test]
@@ -61,91 +143,17 @@ fn take_off_and_flip_expire_after_300_ms() {
 }
 
 #[test]
-fn every_request_id_is_valid() {
-    // protocol.md §5.0: the client's counter simply wraps, 0 included.
-    for request_id in [0, 1, 0x8000, u16::MAX] {
-        let bytes = request_id.to_le_bytes();
-        check_round_trip(simple(request_id)[0].0, 0x20, &bytes);
-        let flip = Message::Flip(flip(request_id, 0, 0));
-        check_round_trip(flip, FLIP, &[bytes[0], bytes[1], 1, 2, 3, 4, 0, 0, 0, 0]);
-    }
-}
-
-#[test]
 fn requests_know_their_request_id() {
-    assert_eq!(
-        Arm {
-            request_id: RequestId(5)
-        }
-        .request_id(),
-        RequestId(5)
-    );
-    assert_eq!(flip(6, 0, 0).request_id(), RequestId(6));
+    let Message::Flip(flip) = Message::from(request(6, 0, FLIP_LEFT)) else {
+        panic!("not a Flip");
+    };
+    assert_eq!(flip.request_id(), RequestId(6));
 }
 
 #[test]
 fn commands_reject_wrong_length() {
-    for (_, message_type) in simple(0) {
-        check_only_length(message_type, &[1, 0]);
+    for command in ALL {
+        let (message_type, _, payload) = expected(command);
+        check_only_length(message_type, &payload);
     }
-    check_only_length(TAKE_OFF, &[1, 0, 0, 0, 0, 0]);
-    check_only_length(FLIP, &[1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-}
-
-/// Each command with the message `Command::request(RequestId(9), 0x0403_0201)` gives.
-fn commands() -> [(Command, Message); 8] {
-    let request_id = RequestId(9);
-    let sent_at = 0x0403_0201;
-    return [
-        (Command::Arm, Message::Arm(Arm { request_id })),
-        (Command::Disarm, Message::Disarm(Disarm { request_id })),
-        (Command::TakeOff, Message::TakeOff(TakeOff { request_id, sent_at })),
-        (Command::Land, Message::Land(Land { request_id })),
-        (Command::GoHome, Message::GoHome(GoHome { request_id })),
-        (
-            Command::Flip {
-                direction: 0xC000,
-                duration_ms: 300,
-            },
-            Message::Flip(flip(9, 0xC000, 300)),
-        ),
-        (Command::SteadyState, Message::SteadyState(SteadyState { request_id })),
-        (
-            Command::ExitSteadyState,
-            Message::ExitSteadyState(ExitSteadyState { request_id }),
-        ),
-    ];
-}
-
-#[test]
-fn a_command_becomes_its_message() {
-    for (command, message) in commands() {
-        assert_eq!(command.request(RequestId(9), 0x0403_0201), message);
-    }
-}
-
-#[test]
-fn a_command_message_gives_its_command() {
-    for (command, message) in commands() {
-        assert_eq!(message.command(), Some(command));
-    }
-}
-
-#[test]
-fn other_messages_are_no_command() {
-    assert_eq!(Message::Ping(Ping { timestamp: 1 }).command(), None);
-}
-
-#[test]
-fn only_take_off_and_flip_expire() {
-    let expiring: Vec<Command> = commands()
-        .into_iter()
-        .map(|(command, _)| return command)
-        .filter(|command| return command.expires())
-        .collect();
-    let flip = Command::Flip {
-        direction: 0xC000,
-        duration_ms: 300,
-    };
-    assert_eq!(expiring, [Command::TakeOff, flip]);
 }

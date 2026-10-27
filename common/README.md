@@ -52,7 +52,7 @@ resending what gets lost (protocol.md §5.0a).
 
 ```rust
 use drone_common::wire::event::{Event, EventKind};
-use drone_common::wire::message::{Answer, Command, Hello, HelloResult, Message, Options, RequestId};
+use drone_common::wire::message::{Answer, Command, CommandRequest, Hello, HelloResult, Message, Options, RequestId};
 use drone_common::wire::reply::Reply;
 use drone_common::wire::stream::StreamDecoder;
 use std::error::Error;
@@ -66,14 +66,16 @@ fn client(link: &mut (impl Read + Write)) -> Result<(), Box<dyn Error>> {
     };
     send(link, &mut sequence, Message::Hello(hello))?;
 
-    // Requests count up their own Request ID; a resend keeps it (protocol.md §5.0a).
     // A real client sends this after the HelloReply, with Sticks going out at 50 Hz all the time (§5.2).
-    let flip = Command::Flip {
-        direction: 0xC000, // to the left
-        duration_ms: 300,
+    let flip = CommandRequest {
+        request_id: RequestId(1), // requests count up their own Request ID; a resend keeps it (protocol.md §5.0a)
+        sent_at: 0,               // client's session clock in µs: the drone refuses a Flip older than COMMAND_EXPIRY_US
+        command: Command::Flip {
+            direction: 0xC000, // to the left
+            duration_ms: 300,
+        },
     };
-    // 0 is the client's session clock in µs now: the drone refuses a Flip older than COMMAND_EXPIRY_US.
-    send(link, &mut sequence, flip.request(RequestId(1), 0))?;
+    send(link, &mut sequence, Message::from(flip))?;
 
     let mut decoder = StreamDecoder::new();
     let mut read_buf = [0u8; 512];
@@ -178,12 +180,12 @@ fn drone(link: &mut (impl Read + Write), flight: &mut Flight) -> Result<(), Box<
 
 | Module | Public items | What it is |
 |--------|--------------|------------|
-| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Ack`, `Arm`, `Flip`, …), `Command`, `HelloResult`, the refusal codes (`ArmRefusal`, …), `Request`, `RequestId`, `Answer`, `RequestType`, `UnknownType`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode`. Each message is defined once, in one list |
+| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Ack`, `Arm`, `Flip`, …), `Command`, `CommandRequest`, `HelloResult`, the refusal codes (`ArmRefusal`, …), `Request`, `RequestId`, `Answer`, `RequestType`, `UnknownType`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode`. Each message is defined once, in one list |
 | `wire::reply` | `Reply`, `Outcome`, `Reason` | The drone's answer to a request, typed per request: only combinations the protocol allows can be built. Every refusal enum (`FlipRefusal`, …) converts into the shared `Reason`, so the client can handle any refusal in one place. `Reply::to(&request, outcome)` takes the Request ID and type from the request; `Reply::to_invalid(&packet)` answers a packet that didn't decode |
 | `wire::event` | `Event` (the message), `EventId`, `EventKind`, one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `EventLevel`, `FailsafeCause`, `Text`, `EventText`, `FixedEvent` | What the drone reports on its own; each event holds only its own data. `EventText` is a string without heap: use it like a `&str`, build it with `EventText::format(format_args!(…))` |
 | `wire::packet` | `Packet`, `PacketError`, `MAX_PACKET_LEN` | A checked packet: `parse`, `sequence`, `as_bytes` |
 | `wire::stream` | `encode`, `StreamDecoder`, `MAX_FRAME_LEN` | COBS framing; only needed on byte streams |
-| `domain` | `Sticks` (the Sticks message, re-exported), `Command` (re-exported: a command message without Request ID and Sent At; `command.request(..)` and `message.command()` convert), `ArmState`, `ArmSwitch`, `LinkHealth`, `Uptime`, `RcChannels` | Protocol-neutral state: what the sticks say, what the pilot asks, armed or not, the arm switch, when the client was last heard |
+| `domain` | `Sticks` (the Sticks message, re-exported), `Command` (re-exported: a command message without Request ID and Sent At; `Message::from(CommandRequest { .. })` and `message.command()` convert), `ArmState`, `ArmSwitch`, `LinkHealth`, `Uptime`, `RcChannels` | Protocol-neutral state: what the sticks say, what the pilot asks, armed or not, the arm switch, when the client was last heard |
 | `crsf` | CRSF constants and CRC-8 | CRSF (Crossfire), the radio protocol between the ELRS receiver and the FC |
 
 The CRC-16 and COBS code itself is private.

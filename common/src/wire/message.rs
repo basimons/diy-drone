@@ -113,6 +113,15 @@ wire_struct!(
 /// resending it then too (protocol.md §5.3).
 pub const COMMAND_EXPIRY_US: u32 = 300_000;
 
+/// A command as our protocol sends it: the command message, split into what only our protocol has and the
+/// protocol-neutral `Command`. `Message::from` builds the message, `Message::command` reads it back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CommandRequest {
+    pub request_id: RequestId,
+    pub sent_at: u32, // client's session clock in µs when the pilot gave the command; a resend keeps it
+    pub command: Command,
+}
+
 mod sealed {
     pub trait Sealed {}
 }

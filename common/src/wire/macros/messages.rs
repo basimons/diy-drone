@@ -1,8 +1,10 @@
-/// Defines every message from one list: its struct (unless it is defined elsewhere, like `Reply`), its type byte,
-/// `Message` over all of them, and for each command its refusal codes, its `Answer` variant, its `RequestType` and its
-/// `Command` variant. A command's struct starts with its Request ID, then, if it `expires`, its Sent At; the fields
-/// listed are the command's own, shared with its `Command` variant. `refused` lists the `Reason`s it may be refused
-/// for, as its own enum; one without `refused` is never refused.
+/// Defines every message from one list: its struct (unless it is defined elsewhere, like `Reply`), its type byte and
+/// `Message` over all of them. Every request is a command so far (protocol.md §5.3); for each one it also defines its
+/// refusal codes, its `Answer` variant, its `RequestType` and its `Command` variant. A command's struct is its Request
+/// ID, its Sent At, then the fields listed, which are the command's own and shared with its `Command` variant. Only doc
+/// comments go on a command, since they are copied to both. `expires` marks a command the drone refuses as too late;
+/// its `refused` must include `TooLate`. `refused` lists the `Reason`s it may be refused for, as its own enum; one
+/// without `refused` is never refused.
 macro_rules! messages {
     (@refusal) => { ::core::convert::Infallible };
     (@refusal $refusal:ident) => { $refusal };
@@ -11,27 +13,24 @@ macro_rules! messages {
         $crate::wire::macros::wire_struct!($(#[$meta])* $name { $($fields)* });
     };
     (@command_struct [$(#[$meta:meta])*] expires $name:ident { $($fields:tt)* }) => {
+        $crate::wire::macros::messages!(@command_struct [
+            $(#[$meta])*
+            #[doc = ""]
+            #[doc = "Expires: refused as `TooLate` when older than `COMMAND_EXPIRY_US` (protocol.md §5.3)."]
+        ] $name { $($fields)* });
+
+        const _: <$name as Request>::Refusal = <$name as Request>::Refusal::TooLate;
+    };
+    (@command_struct [$(#[$meta:meta])*] $name:ident { $($fields:tt)* }) => {
         $crate::wire::macros::wire_struct!($(#[$meta])* $name {
             request_id: RequestId,
             /// Client's session clock in µs when the pilot gave the command; a resend keeps it.
             sent_at: u32,
             $($fields)*
         });
-
-        // An expiring command must be refusable as too late.
-        const _: <$name as Request>::Refusal = <$name as Request>::Refusal::TooLate;
-    };
-    (@command_struct [$(#[$meta:meta])*] $name:ident { $($fields:tt)* }) => {
-        $crate::wire::macros::wire_struct!($(#[$meta])* $name { request_id: RequestId, $($fields)* });
     };
     (@expires expires) => { true };
     (@expires) => { false };
-    (@command_message expires $name:ident [$request_id:ident, $sent_at:ident] { $($field:ident),* }) => {
-        Message::$name($name { request_id: $request_id, sent_at: $sent_at, $($field),* })
-    };
-    (@command_message $name:ident [$request_id:ident, $sent_at:ident] { $($field:ident),* }) => {
-        Message::$name($name { request_id: $request_id, $($field),* })
-    };
     // Builds `Command` one variant at a time, so a command without fields is a unit variant (`Command::Arm`).
     (@command_enum [$($variants:tt)*]) => {
         /// What the pilot asks the drone to do, whichever protocol it came over (protocol.md §3): a command message
@@ -127,20 +126,19 @@ macro_rules! messages {
         );
 
         impl Command {
-            /// The message for this command. `sent_at` is the client's session clock in µs now; only commands that
-            /// expire carry it.
-            pub fn request(self, request_id: RequestId, sent_at: u32) -> Message {
-                return match self {
-                    $(Command::$request { $($field),* } => $crate::wire::macros::messages!(
-                        @command_message $($expires)? $request [request_id, sent_at] { $($field),* }
-                    ),)*
-                };
-            }
-
             /// Whether the drone refuses it as too late when older than `COMMAND_EXPIRY_US` (protocol.md §5.3).
             pub fn expires(self) -> bool {
                 return match self {
                     $(Command::$request { .. } => $crate::wire::macros::messages!(@expires $($expires)?),)*
+                };
+            }
+        }
+
+        impl From<CommandRequest> for Message {
+            fn from(request: CommandRequest) -> Message {
+                let CommandRequest { request_id, sent_at, command } = request;
+                return match command {
+                    $(Command::$request { $($field),* } => Message::$request($request { request_id, sent_at, $($field),* }),)*
                 };
             }
         }
@@ -178,10 +176,14 @@ macro_rules! messages {
         }
 
         impl Message {
-            /// The command a command message carries; `None` for other messages.
-            pub fn command(&self) -> Option<Command> {
-                return match self {
-                    $(Message::$request(_message) => Some(Command::$request { $($field: _message.$field),* }),)*
+            /// The command a command message carries, with its Request ID and Sent At; `None` for other messages.
+            pub fn command(&self) -> Option<CommandRequest> {
+                return match *self {
+                    $(Message::$request(message) => Some(CommandRequest {
+                        request_id: message.request_id,
+                        sent_at: message.sent_at,
+                        command: Command::$request { $($field: message.$field),* },
+                    }),)*
                     _ => None,
                 };
             }

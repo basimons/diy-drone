@@ -132,6 +132,7 @@ fn reply_to_takes_request_id_and_type_from_the_request() {
     );
     let arm = Arm {
         request_id: RequestId(10),
+        sent_at: 0,
     };
     assert_eq!(Reply::to(&arm, Outcome::Ok).answer, Answer::Arm(Outcome::Ok));
 }
@@ -176,7 +177,7 @@ fn reply_to_an_unknown_type() {
 #[test]
 fn no_reply_when_there_is_nothing_to_answer() {
     let cases: [(&str, u8, u16, &[u8]); 6] = [
-        ("a valid request", 0x20, 1, &[5, 0]),
+        ("a valid request", 0x20, 1, &[5, 0, 1, 2, 3, 4]),
         ("too short for a Request ID", 0x20, 1, &[5]),
         ("unknown type too short for a Request ID", 0xEE, 1, &[]),
         ("not a request", 0x10, 1, &[0; 3]),

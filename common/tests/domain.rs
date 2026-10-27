@@ -77,9 +77,3 @@ fn uptime_going_back_still_keeps_fresh_at_or_before_valid() {
     let health = LinkHealth::default().heard_fresh(Uptime(200)).heard_repeat(Uptime(100));
     assert_eq!(health.last_heard(), heard(100, 100));
 }
-
-#[test]
-fn the_domain_command_is_the_message_command() {
-    let command: drone_common::domain::Command = drone_common::wire::message::Command::Land;
-    assert_eq!(command, drone_common::domain::Command::Land);
-}
