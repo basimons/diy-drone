@@ -50,7 +50,7 @@ pub fn send(link: &mut impl Write, sequence: &mut u16, message: Message) -> std:
 Opens a session, asks for a flip, then handles whatever comes back.
 
 ```rust
-use drone_common::wire::event::Event;
+use drone_common::wire::event::{Event, EventKind};
 use drone_common::wire::message::{Answer, Flip, Hello, HelloResult, Message, Options, RequestId};
 use drone_common::wire::reply::Reply;
 use drone_common::wire::stream::StreamDecoder;
@@ -65,10 +65,11 @@ fn client(link: &mut (impl Read + Write)) -> Result<(), Box<dyn Error>> {
     };
     send(link, &mut sequence, Message::Hello(hello))?;
 
-    // Requests count up their own Request ID; a resend after a timeout keeps it (protocol.md §5.0).
+    // Requests count up their own Request ID; a resend keeps it (protocol.md §5.0a).
     // A real client sends this after the HelloReply, with Sticks going out at 50 Hz all the time (§5.2).
     let flip = Flip {
         request_id: RequestId(1),
+        sent_at: 0,        // client's session clock in µs; the drone refuses a Flip older than 300 ms
         direction: 0xC000, // to the left
         duration_ms: 300,
     };
@@ -89,8 +90,11 @@ fn client(link: &mut (impl Read + Write)) -> Result<(), Box<dyn Error>> {
                 Ok(Message::Reply(Reply { request_id, answer: Answer::Flip(outcome) })) => {
                     println!("flip {request_id:?}: {outcome:?}") // e.g. "flip RequestId(1): Refused(NotArmed)"
                 }
-                Ok(Message::Event(Event::Text(text))) => println!("{:?}: {}", text.level, text.text),
-                Ok(Message::Event(event)) => println!("{:?}: {event:?}", event.level()),
+                // A resent event keeps its Event ID: a real client shows each ID once (protocol.md §5.0a).
+                Ok(Message::Event(Event { kind: EventKind::Text(text), .. })) => {
+                    println!("{:?}: {}", text.level, text.text);
+                }
+                Ok(Message::Event(Event { kind, .. })) => println!("{:?}: {kind:?}", kind.level()),
                 Ok(other) => println!("ignored {other:?}"),
                 Err(error) => println!("dropped an invalid message: {error}"), // only the drone answers these
             }
@@ -103,8 +107,8 @@ fn client(link: &mut (impl Read + Write)) -> Result<(), Box<dyn Error>> {
 
 Answers every request: with its outcome, or with "malformed" / "unknown type" when it doesn't decode. Deciding
 *whether* to arm or flip is the flight code's job; the types only let it answer with reasons that request may have.
-Not shown: remembering the last 16 Request IDs, so a resent request is answered again without being executed twice
-(protocol.md §5.0).
+Not shown: acknowledging and resending (protocol.md §5.0a), and remembering the last 16 Request IDs so a resent
+request is not executed twice.
 
 ```rust
 use drone_common::wire::message::{ArmRefusal, HelloReply, HelloResult, Message, Options};
@@ -163,7 +167,8 @@ fn drone(link: &mut (impl Read + Write), flight: &mut Flight) -> Result<(), Box<
             }
         }
         // The drone also reports on its own, e.g. when the battery runs low:
-        // send(link, &mut sequence, Message::Event(Event::BatteryLow(BatteryLow { millivolts })))?;
+        // let kind = EventKind::BatteryLow(BatteryLow { millivolts });
+        // send(link, &mut sequence, Message::Event(Event { event_id, kind }))?;
     }
 }
 ```
@@ -172,9 +177,9 @@ fn drone(link: &mut (impl Read + Write), flight: &mut Flight) -> Result<(), Box<
 
 | Module | Public items | What it is |
 |--------|--------------|------------|
-| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Arm`, `Flip`, …), `HelloResult`, the refusal codes (`ArmRefusal`, …), `Request`, `RequestId`, `Answer`, `RequestType`, `UnknownType`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode`. Each message is defined once, in one list |
+| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Ack`, `Arm`, `Flip`, …), `HelloResult`, the refusal codes (`ArmRefusal`, …), `Request`, `RequestId`, `Answer`, `RequestType`, `UnknownType`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode`. Each message is defined once, in one list |
 | `wire::reply` | `Reply`, `Outcome`, `Reason` | The drone's answer to a request, typed per request: only combinations the protocol allows can be built. Every refusal enum (`FlipRefusal`, …) converts into the shared `Reason`, so the client can handle any refusal in one place. `Reply::to(&request, outcome)` takes the Request ID and type from the request; `Reply::to_invalid(&packet)` answers a packet that didn't decode |
-| `wire::event` | `Event`, one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `EventLevel`, `FailsafeCause`, `Text`, `EventText`, `EventKind` | What the drone reports on its own; each event holds only its own data. `EventText` is a string without heap: use it like a `&str`, build it with `EventText::format(format_args!(…))` |
+| `wire::event` | `Event` (the message: `EventId` and `EventKind`), one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `EventLevel`, `FailsafeCause`, `Text`, `EventText`, `FixedEvent` | What the drone reports on its own; each event holds only its own data. `EventText` is a string without heap: use it like a `&str`, build it with `EventText::format(format_args!(…))` |
 | `wire::packet` | `Packet`, `PacketError`, `MAX_PACKET_LEN` | A checked packet: `parse`, `sequence`, `as_bytes` |
 | `wire::stream` | `encode`, `StreamDecoder`, `MAX_FRAME_LEN` | COBS framing; only needed on byte streams |
 | `domain` | `Sticks` (the Sticks message, re-exported), `ArmState`, `RcChannels` | Protocol-neutral state: what the sticks say, armed or not |

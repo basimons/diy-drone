@@ -6,31 +6,41 @@ use support::*;
 
 const EVENT: u8 = 0x41;
 
-fn check(event: Event, payload: &[u8]) {
-    check_round_trip(Message::Event(event), EVENT, payload);
+/// Checks `kind` as Event ID 0x0102: its payload is that ID, then `payload`.
+fn check(kind: EventKind, payload: &[u8]) {
+    let event = Event {
+        event_id: EventId(0x0102),
+        kind,
+    };
+    check_round_trip(Message::Event(event), EVENT, &with_id(payload));
+}
+
+/// Event ID 0x0102, then `rest`.
+fn with_id(rest: &[u8]) -> Vec<u8> {
+    return [&[0x02, 0x01][..], rest].concat();
 }
 
 #[test]
 fn events_without_data() {
-    check(Event::Armed(Armed), &[1, 0x01, 0x01]);
-    check(Event::Disarmed(Disarmed), &[1, 0x02, 0x01]);
-    check(Event::LinkLost(LinkLost), &[2, 0x01, 0x02]);
-    check(Event::LinkRestored(LinkRestored), &[1, 0x02, 0x02]);
-    check(Event::ImuError(ImuError), &[3, 0x03, 0x04]);
+    check(EventKind::Armed(Armed), &[1, 0x01, 0x01]);
+    check(EventKind::Disarmed(Disarmed), &[1, 0x02, 0x01]);
+    check(EventKind::LinkLost(LinkLost), &[2, 0x01, 0x02]);
+    check(EventKind::LinkRestored(LinkRestored), &[1, 0x02, 0x02]);
+    check(EventKind::ImuError(ImuError), &[3, 0x03, 0x04]);
 }
 
 #[test]
 fn events_with_data() {
     check(
-        Event::BatteryLow(BatteryLow { millivolts: 14_000 }),
+        EventKind::BatteryLow(BatteryLow { millivolts: 14_000 }),
         &[2, 0x01, 0x03, 0xB0, 0x36],
     );
     check(
-        Event::BatteryCritical(BatteryCritical { millivolts: 13_200 }),
+        EventKind::BatteryCritical(BatteryCritical { millivolts: 13_200 }),
         &[3, 0x02, 0x03, 0x90, 0x33],
     );
     check(
-        Event::LoopOverrun(LoopOverrun { late_us: 0x0001_0203 }),
+        EventKind::LoopOverrun(LoopOverrun { late_us: 0x0001_0203 }),
         &[3, 0x02, 0x04, 0x03, 0x02, 0x01, 0x00],
     );
 }
@@ -40,8 +50,24 @@ fn every_failsafe_cause() {
     use FailsafeCause::*;
     for (cause, byte) in [(LinkLoss, 1), (ClientFrozen, 2), (LowBattery, 3), (LoopOverrun, 4)] {
         check(
-            Event::FailsafeTriggered(FailsafeTriggered { cause }),
+            EventKind::FailsafeTriggered(FailsafeTriggered { cause }),
             &[3, 0x01, 0x04, byte],
+        );
+    }
+}
+
+#[test]
+fn every_event_id_is_valid() {
+    // protocol.md §5.4: the drone's counter simply wraps, 0 included.
+    for id in [0, 1, 0x8000, u16::MAX] {
+        let event = Event {
+            event_id: EventId(id),
+            kind: EventKind::Armed(Armed),
+        };
+        check_round_trip(
+            Message::Event(event),
+            EVENT,
+            &[&id.to_le_bytes()[..], &[1, 0x01, 0x01]].concat(),
         );
     }
 }
@@ -51,7 +77,7 @@ fn each_event_kind_has_a_fixed_code_and_level() {
     assert_eq!((Armed::CODE, Armed::LEVEL), (0x0101, EventLevel::Info));
     assert_eq!((BatteryLow::CODE, BatteryLow::LEVEL), (0x0301, EventLevel::Warning));
     assert_eq!(
-        Event::BatteryCritical(BatteryCritical { millivolts: 1 }).level(),
+        EventKind::BatteryCritical(BatteryCritical { millivolts: 1 }).level(),
         EventLevel::Error
     );
 }
@@ -65,7 +91,7 @@ fn text_at_every_level() {
         (EventLevel::Warning, 2),
         (EventLevel::Error, 3),
     ] {
-        let event = Event::Text(Text {
+        let event = EventKind::Text(Text {
             level,
             text: EventText::new(text).unwrap(),
         });
@@ -75,11 +101,11 @@ fn text_at_every_level() {
 }
 
 #[test]
-fn text_is_never_empty_and_at_most_246_bytes() {
-    // 249 bytes of payload, minus Level and Code.
-    assert_eq!(MAX_EVENT_TEXT_LEN, 246);
+fn text_is_never_empty_and_at_most_244_bytes() {
+    // 249 bytes of payload, minus Event ID, Level and Code.
+    assert_eq!(MAX_EVENT_TEXT_LEN, 244);
     let longest = "x".repeat(MAX_EVENT_TEXT_LEN);
-    let event = Event::Text(Text {
+    let event = EventKind::Text(Text {
         level: EventLevel::Info,
         text: EventText::new(&longest).unwrap(),
     });
@@ -128,14 +154,23 @@ fn rejects_unknown_codes() {
     // The protocol version is bumped when codes are added, so after Hello an unknown code is an error.
     let unknown = |kind, value| return Err(MessageError::UnknownCode { kind, value });
     assert_eq!(
-        decode_payload(EVENT, &[2, 0x99, 0x09, 1, 2]),
+        decode_payload(EVENT, &with_id(&[2, 0x99, 0x09, 1, 2])),
         unknown("EventCode", 0x0999)
     );
-    assert_eq!(decode_payload(EVENT, &[9, 0, 0, b'h', b'i']), unknown("EventLevel", 9));
-    assert_eq!(decode_payload(EVENT, &[9, 0x01, 0x01]), unknown("EventLevel", 9));
-    assert_eq!(decode_payload(EVENT, &[3, 0x01, 0x04, 0]), unknown("FailsafeCause", 0));
     assert_eq!(
-        decode_payload(EVENT, &[3, 0x01, 0x04, 0xEE]),
+        decode_payload(EVENT, &with_id(&[9, 0, 0, b'h', b'i'])),
+        unknown("EventLevel", 9)
+    );
+    assert_eq!(
+        decode_payload(EVENT, &with_id(&[9, 0x01, 0x01])),
+        unknown("EventLevel", 9)
+    );
+    assert_eq!(
+        decode_payload(EVENT, &with_id(&[3, 0x01, 0x04, 0])),
+        unknown("FailsafeCause", 0)
+    );
+    assert_eq!(
+        decode_payload(EVENT, &with_id(&[3, 0x01, 0x04, 0xEE])),
         unknown("FailsafeCause", 0xEE)
     );
 }
@@ -165,13 +200,13 @@ fn rejects_known_events_that_dont_fit() {
         ("cut-off UTF-8 character", vec![1, 0, 0, 0xE2, 0x9A], InvalidValue),
     ];
     for (case, payload, error) in cases {
-        assert_eq!(decode_payload(EVENT, &payload), Err(error), "{case}");
+        assert_eq!(decode_payload(EVENT, &with_id(&payload)), Err(error), "{case}");
     }
 }
 
 #[test]
 fn rejects_too_short() {
-    for length in 0..3 {
+    for length in 0..5 {
         assert_eq!(decode_payload(EVENT, &vec![1; length]), Err(MessageError::WrongLength));
     }
 }
@@ -183,7 +218,7 @@ fn every_event_header_decodes_or_is_rejected() {
         let around_codes = (0..=4u16).flat_map(|group| return (0..=5).map(move |n| return group << 8 | n));
         for code in around_codes.chain([0x0999, u16::MAX]) {
             for data in [&[][..], &[1][..], &[1, 2][..], &[1, 2, 3, 4][..]] {
-                let payload = [&[level][..], &code.to_le_bytes(), data].concat();
+                let payload = [&[0x02, 0x01, level][..], &code.to_le_bytes(), data].concat();
                 if let Ok(message) = decode_payload(EVENT, &payload) {
                     assert_eq!(encode_packet(&message, 0), packet(0, EVENT, 0, &payload));
                 }

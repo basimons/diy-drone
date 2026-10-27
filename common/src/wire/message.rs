@@ -1,6 +1,6 @@
 //! The messages of protocol.md §5, as owned Rust types with encode/decode.
 
-use crate::wire::event::Event;
+use crate::wire::event::{EventId, EventKind};
 use crate::wire::macros::{code, messages};
 use crate::wire::packet::{MAX_PACKET_LEN, Packet};
 use crate::wire::payload::{Code, Reader, Wire, Writer};
@@ -151,6 +151,12 @@ messages! {
             receive_time: u32,
             send_time: u32,
         },
+        /// Which of the other side's messages arrived (protocol.md §5.0a).
+        Ack = 0x08 {
+            largest_received: u16, // the newest Sequence received
+            ack_delay_us: u16,     // from receiving `largest_received` to sending this Ack
+            received_before: u32,  // bit n set: Sequence `largest_received` − 1 − n arrived too
+        },
         /// Stick positions, protocol-neutral (protocol.md §5.2): what they mean is up to the flight code. Also the
         /// internal state's type, as `domain::Sticks`.
         Sticks = 0x10 {
@@ -164,24 +170,45 @@ messages! {
             request_id: RequestId,
             answer: Answer,
         },
-        Event = 0x41,
+        /// The drone tells the client something happened (protocol.md §5.4).
+        Event = 0x41 {
+            event_id: EventId,
+            kind: EventKind,
+        },
     }
     requests {
         /// Accepted only while the transmitter's arm switch is on (drone-design.md, "Failsafes").
         Arm = 0x20 {} refused ArmRefusal { BatteryLow, ThrottleNotLow, ImuNotReady, ArmSwitchOff },
         /// Never refused: disarming must always work.
         Disarm = 0x21 {},
-        TakeOff = 0x22 {} refused TakeOffRefusal { NotArmed, BatteryLow },
+        /// Expires: refused as `TooLate` when older than 300 ms (protocol.md §5.3).
+        TakeOff = 0x22 {
+            sent_at: u32, // client's session clock in µs when the pilot gave the command; a resend keeps it
+        } refused TakeOffRefusal { NotArmed, BatteryLow, TooLate },
         Land = 0x23 {} refused LandRefusal { NotFlying },
         /// "Not supported" until GPS is fitted.
         GoHome = 0x24 {},
+        /// Expires like TakeOff.
         Flip = 0x25 {
+            sent_at: u32, // like TakeOff
             direction: u16, // 0 = forward, clockwise seen from above, a full circle over 0 … 65535
             duration_ms: u16,
-        } refused FlipRefusal { NotArmed, NotFlying, TooLow },
+        } refused FlipRefusal { NotArmed, NotFlying, TooLow, TooLate },
         /// Hold still and accept only a few requests.
         SteadyState = 0x26 {} refused SteadyStateRefusal { NotFlying },
         ExitSteadyState = 0x27 {},
+    }
+}
+
+impl Ack {
+    /// Whether this Ack says that the message with this Sequence arrived: `largest_received` itself or one of the 32
+    /// before it with its bit set.
+    pub fn acknowledges(&self, sequence: u16) -> bool {
+        return match self.largest_received.wrapping_sub(sequence) {
+            0 => true,
+            distance @ 1..=32 => self.received_before & (1 << (distance - 1)) != 0,
+            _ => false,
+        };
     }
 }
 

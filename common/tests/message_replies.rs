@@ -55,10 +55,12 @@ fn every_refusal_with_its_reason() {
         (arm(ArmRefusal::ArmSwitchOff), 0x20, 7),
         (take_off(TakeOffRefusal::NotArmed), 0x22, 1),
         (take_off(TakeOffRefusal::BatteryLow), 0x22, 4),
+        (take_off(TakeOffRefusal::TooLate), 0x22, 14),
         (Answer::Land(Outcome::Refused(LandRefusal::NotFlying)), 0x23, 2),
         (flip(FlipRefusal::NotArmed), 0x25, 1),
         (flip(FlipRefusal::NotFlying), 0x25, 2),
         (flip(FlipRefusal::TooLow), 0x25, 3),
+        (flip(FlipRefusal::TooLate), 0x25, 14),
         (
             Answer::SteadyState(Outcome::Refused(SteadyStateRefusal::NotFlying)),
             0x26,
@@ -80,6 +82,10 @@ fn a_reason_has_one_number_for_every_request() {
         Reason::from(TakeOffRefusal::BatteryLow)
     );
     assert_eq!(Reason::from(ArmRefusal::ArmSwitchOff), Reason::ArmSwitchOff);
+    assert_eq!(
+        Reason::from(FlipRefusal::TooLate),
+        Reason::from(TakeOffRefusal::TooLate)
+    );
     assert_eq!(
         Reason::from(LandRefusal::NotFlying),
         Reason::from(SteadyStateRefusal::NotFlying)
@@ -112,6 +118,7 @@ fn failures_without_a_reason() {
 fn reply_to_takes_request_id_and_type_from_the_request() {
     let flip = Flip {
         request_id: RequestId(9),
+        sent_at: 0,
         direction: 0,
         duration_ms: 300,
     };
@@ -235,6 +242,10 @@ fn rejects_impossible_combinations() {
         ("Disarm refused", payload(0x21, 1, 1)),
         ("Flip refused because the throttle is not low", payload(0x25, 1, 5)),
         ("Arm refused because it is not armed", payload(0x20, 1, 1)),
+        (
+            "Arm refused as too late: only TakeOff and Flip expire",
+            payload(0x20, 1, 14),
+        ),
         ("GoHome refused", payload(0x24, 1, 1)),
         ("ExitSteadyState refused", payload(0x27, 1, 1)),
         ("unknown type for a known request", payload(0x20, 2, 0)),
