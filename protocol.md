@@ -747,7 +747,7 @@ where:
  0               1               2               3
  0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|           Request ID          |   Remaining   |               :
+|           Request ID          |  Next Log ID  |               :
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+               +
 :                   Log Entry list (variable)                   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -756,7 +756,7 @@ where:
 where:
 
 - **Request ID (RID):** 2 bytes, u16. The ListLogs it answers.
-- **Remaining:** 1 byte, u8. How many logs come after this list (0: this is the last page).
+- **Next Log ID:** 1 byte, u8. The First Log ID to ask for the next page; 0 when this is the last page.
 - **Log Entry list:** variable length, 0 to 49 [Log Entry] (what fits in 255), sorted by Log ID, starting at the first log whose Log ID ≥ First Log ID.
 
 A **Log Entry**:
@@ -819,7 +819,7 @@ Rules:
 
 - **Log IDs are 1 byte**, so the drone lists at most 255 logs (the newest ones; 0 is never used). Older logs stay on the SD card and can be fetched over WiFi as files.
 - The client asks by **position**, so a lost chunk or page is just asked for again; the drone keeps no download state.
-- **Listing more than one page:** if Remaining is not 0, the client sends a new ListLogs (new Request ID) with First Log ID one past the last Log ID it got. Each ListLogs gets exactly one LogList, so pages of two lists in flight never mix: each carries its own Request ID.
+- **Listing more than one page:** if Next Log ID is not 0, the client sends a new ListLogs (new Request ID) with that value as First Log ID. Each ListLogs gets exactly one LogList, so pages of two lists in flight never mix: each carries its own Request ID.
 - An Offset exactly at the end returns a LogChunk with no Data (the end of the log); an Offset past the end is refused with Reason 13.
 - What goes into a log and its file format: out of scope here.
 
