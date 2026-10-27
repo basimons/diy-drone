@@ -184,7 +184,7 @@ fn drone(link: &mut (impl Read + Write), flight: &mut Flight) -> Result<(), Box<
 | `wire::event` | `Event` (the message), `EventId`, `EventKind`, one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `EventLevel`, `FailsafeCause`, `Text`, `EventText`, `FixedEvent` | What the drone reports on its own; each event holds only its own data. `EventText` is a string without heap: use it like a `&str`, build it with `EventText::format(format_args!(…))` |
 | `wire::packet` | `Packet`, `PacketError`, `MAX_PACKET_LEN` | A checked packet: `parse`, `sequence`, `as_bytes` |
 | `wire::stream` | `encode`, `StreamDecoder`, `MAX_FRAME_LEN` | COBS framing; only needed on byte streams |
-| `domain` | `Sticks` (the Sticks message, re-exported), `ArmState`, `RcChannels` | Protocol-neutral state: what the sticks say, armed or not |
+| `domain` | `Sticks` (the Sticks message, re-exported), `ArmState`, `ArmSwitch`, `LinkHealth`, `Uptime`, `RcChannels` | Protocol-neutral state: what the sticks say, armed or not, the arm switch, when the client was last heard |
 | `crsf` | CRSF constants and CRC-8 | CRSF (Crossfire), the radio protocol between the ELRS receiver and the FC |
 
 The CRC-16 and COBS code itself is private.
