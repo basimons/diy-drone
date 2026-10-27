@@ -56,6 +56,11 @@ fn flip_message() {
 }
 
 #[test]
+fn take_off_and_flip_expire_after_300_ms() {
+    assert_eq!(COMMAND_EXPIRY_US, 300_000); // protocol.md §5.3
+}
+
+#[test]
 fn every_request_id_is_valid() {
     // protocol.md §5.0: the client's counter simply wraps, 0 included.
     for request_id in [0, 1, 0x8000, u16::MAX] {

@@ -47,7 +47,8 @@ pub fn send(link: &mut impl Write, sequence: &mut u16, message: Message) -> std:
 
 ### Client
 
-Opens a session, asks for a flip, then handles whatever comes back.
+Opens a session, asks for a flip, then handles whatever comes back. Not shown: acknowledging what arrives and
+resending what gets lost (protocol.md §5.0a).
 
 ```rust
 use drone_common::wire::event::{Event, EventKind};
@@ -69,7 +70,7 @@ fn client(link: &mut (impl Read + Write)) -> Result<(), Box<dyn Error>> {
     // A real client sends this after the HelloReply, with Sticks going out at 50 Hz all the time (§5.2).
     let flip = Flip {
         request_id: RequestId(1),
-        sent_at: 0,        // client's session clock in µs; the drone refuses a Flip older than 300 ms
+        sent_at: 0,        // client's session clock in µs; the drone refuses a Flip older than COMMAND_EXPIRY_US
         direction: 0xC000, // to the left
         duration_ms: 300,
     };
@@ -167,6 +168,7 @@ fn drone(link: &mut (impl Read + Write), flight: &mut Flight) -> Result<(), Box<
             }
         }
         // The drone also reports on its own, e.g. when the battery runs low:
+        // `event_id` counts up with `wrapping_add` for every new event:
         // let kind = EventKind::BatteryLow(BatteryLow { millivolts });
         // send(link, &mut sequence, Message::Event(Event { event_id, kind }))?;
     }
@@ -179,7 +181,7 @@ fn drone(link: &mut (impl Read + Write), flight: &mut Flight) -> Result<(), Box<
 |--------|--------------|------------|
 | `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Ack`, `Arm`, `Flip`, …), `HelloResult`, the refusal codes (`ArmRefusal`, …), `Request`, `RequestId`, `Answer`, `RequestType`, `UnknownType`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode`. Each message is defined once, in one list |
 | `wire::reply` | `Reply`, `Outcome`, `Reason` | The drone's answer to a request, typed per request: only combinations the protocol allows can be built. Every refusal enum (`FlipRefusal`, …) converts into the shared `Reason`, so the client can handle any refusal in one place. `Reply::to(&request, outcome)` takes the Request ID and type from the request; `Reply::to_invalid(&packet)` answers a packet that didn't decode |
-| `wire::event` | `Event` (the message: `EventId` and `EventKind`), one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `EventLevel`, `FailsafeCause`, `Text`, `EventText`, `FixedEvent` | What the drone reports on its own; each event holds only its own data. `EventText` is a string without heap: use it like a `&str`, build it with `EventText::format(format_args!(…))` |
+| `wire::event` | `Event` (the message), `EventId`, `EventKind`, one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `EventLevel`, `FailsafeCause`, `Text`, `EventText`, `FixedEvent` | What the drone reports on its own; each event holds only its own data. `EventText` is a string without heap: use it like a `&str`, build it with `EventText::format(format_args!(…))` |
 | `wire::packet` | `Packet`, `PacketError`, `MAX_PACKET_LEN` | A checked packet: `parse`, `sequence`, `as_bytes` |
 | `wire::stream` | `encode`, `StreamDecoder`, `MAX_FRAME_LEN` | COBS framing; only needed on byte streams |
 | `domain` | `Sticks` (the Sticks message, re-exported), `ArmState`, `RcChannels` | Protocol-neutral state: what the sticks say, armed or not |

@@ -3,7 +3,7 @@
 
 use core::fmt::Write;
 
-use crate::wire::macros::{code, events};
+use crate::wire::macros::{code, events, wire_struct};
 use crate::wire::message::MessageError;
 use crate::wire::packet::MAX_PAYLOAD_LEN;
 use crate::wire::payload::{Reader, Wire, Writer, invalid};
@@ -13,20 +13,11 @@ pub use crate::wire::message::Event;
 /// The rest of the payload after Event ID, Level and Code.
 pub const MAX_EVENT_TEXT_LEN: usize = MAX_PAYLOAD_LEN - 5;
 
-/// Numbers the drone's events, so the client shows a resent one only once (protocol.md §5.0a). Every value is
-/// valid: the drone counts up with `wrapping_add`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct EventId(pub u16);
-
-impl Wire for EventId {
-    fn read(r: &mut Reader) -> Result<Self, MessageError> {
-        return Ok(Self(u16::read(r)?));
-    }
-
-    fn write(&self, w: &mut Writer) {
-        self.0.write(w);
-    }
-}
+wire_struct!(
+    /// Numbers the drone's events, so the client shows a resent one only once (protocol.md §5.0a). Every value is
+    /// valid: the drone counts up with `wrapping_add`.
+    EventId(pub u16)
+);
 
 code!(pub EventLevel: u8 {
     Debug = 0,

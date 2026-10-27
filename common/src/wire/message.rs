@@ -1,7 +1,7 @@
 //! The messages of protocol.md §5, as owned Rust types with encode/decode.
 
 use crate::wire::event::{EventId, EventKind};
-use crate::wire::macros::{code, messages};
+use crate::wire::macros::{code, messages, wire_struct};
 use crate::wire::packet::{MAX_PACKET_LEN, Packet};
 use crate::wire::payload::{Code, Reader, Wire, Writer};
 use crate::wire::reply::{Outcome, Reason, Status};
@@ -103,20 +103,15 @@ code!(
     }
 );
 
-/// Starts every request; matches answers to requests and detects resends (protocol.md §5.0). Every value is
-/// valid: the client counts up with `wrapping_add`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct RequestId(pub u16);
+wire_struct!(
+    /// Starts every request; matches answers to requests and detects resends (protocol.md §5.0). Every value is
+    /// valid: the client counts up with `wrapping_add`.
+    RequestId(pub u16)
+);
 
-impl Wire for RequestId {
-    fn read(r: &mut Reader) -> Result<Self, MessageError> {
-        return Ok(Self(u16::read(r)?));
-    }
-
-    fn write(&self, w: &mut Writer) {
-        self.0.write(w);
-    }
-}
+/// How old a TakeOff or Flip may be, by its Sent At, before the drone refuses it as `TooLate`; the client stops
+/// resending it then too (protocol.md §5.3).
+pub const COMMAND_EXPIRY_US: u32 = 300_000;
 
 mod sealed {
     pub trait Sealed {}
@@ -181,7 +176,7 @@ messages! {
         Arm = 0x20 {} refused ArmRefusal { BatteryLow, ThrottleNotLow, ImuNotReady, ArmSwitchOff },
         /// Never refused: disarming must always work.
         Disarm = 0x21 {},
-        /// Expires: refused as `TooLate` when older than 300 ms (protocol.md §5.3).
+        /// Expires: refused as `TooLate` when older than `COMMAND_EXPIRY_US`.
         TakeOff = 0x22 {
             sent_at: u32, // client's session clock in µs when the pilot gave the command; a resend keeps it
         } refused TakeOffRefusal { NotArmed, BatteryLow, TooLate },

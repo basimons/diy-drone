@@ -1,4 +1,5 @@
 /// Defines every event from one list: its struct, code and level, and `EventKind` over all of them plus `Text`.
+/// The `Event` message around an `EventKind` (with its Event ID) is in the `messages!` list.
 macro_rules! events {
     ($($(#[$meta:meta])* $name:ident = $code:literal, $level:ident { $($fields:tt)* },)*) => {
         const _: () = assert!($($code != 0 &&)* true, "Code 0 is Text");
