@@ -91,3 +91,61 @@ fn commands_reject_wrong_length() {
     check_only_length(TAKE_OFF, &[1, 0, 0, 0, 0, 0]);
     check_only_length(FLIP, &[1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
 }
+
+/// Each command with the message `Command::request(RequestId(9), 0x0403_0201)` gives.
+fn commands() -> [(Command, Message); 8] {
+    let request_id = RequestId(9);
+    let sent_at = 0x0403_0201;
+    return [
+        (Command::Arm, Message::Arm(Arm { request_id })),
+        (Command::Disarm, Message::Disarm(Disarm { request_id })),
+        (Command::TakeOff, Message::TakeOff(TakeOff { request_id, sent_at })),
+        (Command::Land, Message::Land(Land { request_id })),
+        (Command::GoHome, Message::GoHome(GoHome { request_id })),
+        (
+            Command::Flip {
+                direction: 0xC000,
+                duration_ms: 300,
+            },
+            Message::Flip(flip(9, 0xC000, 300)),
+        ),
+        (Command::SteadyState, Message::SteadyState(SteadyState { request_id })),
+        (
+            Command::ExitSteadyState,
+            Message::ExitSteadyState(ExitSteadyState { request_id }),
+        ),
+    ];
+}
+
+#[test]
+fn a_command_becomes_its_message() {
+    for (command, message) in commands() {
+        assert_eq!(command.request(RequestId(9), 0x0403_0201), message);
+    }
+}
+
+#[test]
+fn a_command_message_gives_its_command() {
+    for (command, message) in commands() {
+        assert_eq!(message.command(), Some(command));
+    }
+}
+
+#[test]
+fn other_messages_are_no_command() {
+    assert_eq!(Message::Ping(Ping { timestamp: 1 }).command(), None);
+}
+
+#[test]
+fn only_take_off_and_flip_expire() {
+    let expiring: Vec<Command> = commands()
+        .into_iter()
+        .map(|(command, _)| return command)
+        .filter(|command| return command.expires())
+        .collect();
+    let flip = Command::Flip {
+        direction: 0xC000,
+        duration_ms: 300,
+    };
+    assert_eq!(expiring, [Command::TakeOff, flip]);
+}

@@ -909,8 +909,8 @@ Two shared crates, both `no_std` (no operating system or heap needed) so the fli
 
 ```
 common/src/
-  domain.rs    internal state: Sticks, ArmState, ArmSwitch, LinkHealth (with Uptime, this side's own clock),
-               RcChannels (raw CRSF channel values); later Command, flight mode, settings values
+  domain.rs    internal state: Sticks, Command, ArmState, ArmSwitch, LinkHealth (with Uptime, this side's own
+               clock), RcChannels (raw CRSF channel values); later flight mode, settings values
   wire/        our protocol
     crc16.rs      (private)
     cobs.rs       (private)
@@ -929,7 +929,7 @@ common/src/
 ```
 
 - The **internal state** types the adapters produce (sticks, pending command, settings changes, link health). They are protocol-neutral: CRSF units (172–1811) only exist in `RcChannels` and `crsf.rs`.
-- A Rust type for every message in §5 with encode/decode. Messages are shaped like the wire; where a message *is* a domain concept (Sticks), there is one type: it is defined with the messages and `domain` re-exports it.
+- A Rust type for every message in §5 with encode/decode. Messages are shaped like the wire; where a message *is* a domain concept (Sticks), there is one type: it is defined with the messages and `domain` re-exports it. Commands are generated from the same list: `Command` (e.g. `Command::Flip { direction, duration_ms }`) is a command message without its Request ID and Sent At, so the CRSF adapter can produce one from a switch too.
 - Three layers, each with its own type, so the compiler keeps them apart:
   - `Message::encode(sequence, buf) -> Packet` and `Message::decode(&Packet) -> Result<Message, MessageError>`.
   - `Packet::parse(bytes) -> Result<Packet, PacketError>` checks length, CRC and flags. A `Packet` can only exist after those checks, so `Message::decode` never sees unchecked bytes. UDP uses this directly.

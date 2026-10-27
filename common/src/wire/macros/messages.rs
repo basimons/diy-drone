@@ -1,7 +1,8 @@
 /// Defines every message from one list: its struct (unless it is defined elsewhere, like `Reply`), its type byte,
-/// `Message` over all of them, and for each request its refusal codes, its `Answer` variant and its `RequestType`.
-/// A request's struct starts with its Request ID. `refused` lists the `Reason`s it may be refused for, as its own
-/// enum; one without `refused` is never refused.
+/// `Message` over all of them, and for each command its refusal codes, its `Answer` variant, its `RequestType` and its
+/// `Command` variant. A command's struct starts with its Request ID, then, if it `expires`, its Sent At; the fields
+/// listed are the command's own, shared with its `Command` variant. `refused` lists the `Reason`s it may be refused
+/// for, as its own enum; one without `refused` is never refused.
 macro_rules! messages {
     (@refusal) => { ::core::convert::Infallible };
     (@refusal $refusal:ident) => { $refusal };
@@ -9,11 +10,51 @@ macro_rules! messages {
     (@struct $(#[$meta:meta])* $name:ident { $($fields:tt)* }) => {
         $crate::wire::macros::wire_struct!($(#[$meta])* $name { $($fields)* });
     };
+    (@command_struct [$(#[$meta:meta])*] expires $name:ident { $($fields:tt)* }) => {
+        $crate::wire::macros::wire_struct!($(#[$meta])* $name {
+            request_id: RequestId,
+            /// Client's session clock in µs when the pilot gave the command; a resend keeps it.
+            sent_at: u32,
+            $($fields)*
+        });
+
+        // An expiring command must be refusable as too late.
+        const _: <$name as Request>::Refusal = <$name as Request>::Refusal::TooLate;
+    };
+    (@command_struct [$(#[$meta:meta])*] $name:ident { $($fields:tt)* }) => {
+        $crate::wire::macros::wire_struct!($(#[$meta])* $name { request_id: RequestId, $($fields)* });
+    };
+    (@expires expires) => { true };
+    (@expires) => { false };
+    (@command_message expires $name:ident [$request_id:ident, $sent_at:ident] { $($field:ident),* }) => {
+        Message::$name($name { request_id: $request_id, sent_at: $sent_at, $($field),* })
+    };
+    (@command_message $name:ident [$request_id:ident, $sent_at:ident] { $($field:ident),* }) => {
+        Message::$name($name { request_id: $request_id, $($field),* })
+    };
+    // Builds `Command` one variant at a time, so a command without fields is a unit variant (`Command::Arm`).
+    (@command_enum [$($variants:tt)*]) => {
+        /// What the pilot asks the drone to do, whichever protocol it came over (protocol.md §3): a command message
+        /// without its Request ID and Sent At, which only our protocol has. Also the internal state's type, as
+        /// `domain::Command`.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum Command {
+            $($variants)*
+        }
+    };
+    (@command_enum [$($variants:tt)*] [$(#[$meta:meta])*] $name:ident {} $($rest:tt)*) => {
+        $crate::wire::macros::messages!(@command_enum [$($variants)* $(#[$meta])* $name,] $($rest)*);
+    };
+    (@command_enum [$($variants:tt)*] [$(#[$meta:meta])*] $name:ident { $($fields:tt)+ } $($rest:tt)*) => {
+        $crate::wire::macros::messages!(@command_enum [$($variants)* $(#[$meta])* $name { $($fields)+ },] $($rest)*);
+    };
     (
         others { $($(#[$meta:meta])* $name:ident = $type:literal $({ $($fields:tt)* })?,)* }
-        requests {
+        commands {
             $(
-                $(#[$request_meta:meta])* $request:ident = $request_type:literal { $($request_fields:tt)* }
+                $(#[$request_meta:meta])* $request:ident = $request_type:literal $($expires:ident)? {
+                    $($(#[$field_meta:meta])* $field:ident: $field_type:ty),* $(,)?
+                }
                 $(refused $refusal:ident { $($reason:ident),* $(,)? })?,
             )*
         }
@@ -21,10 +62,11 @@ macro_rules! messages {
         $($crate::wire::macros::messages!(@struct $(#[$meta])* $name $({ $($fields)* })?);)*
 
         $(
-            $crate::wire::macros::wire_struct!($(#[$request_meta])* $request {
-                request_id: RequestId,
-                $($request_fields)*
-            });
+            $crate::wire::macros::messages!(
+                @command_struct [$(#[$request_meta])*] $($expires)? $request {
+                    $($(#[$field_meta])* $field: $field_type,)*
+                }
+            );
 
             $(
                 #[doc = concat!("The `Reason`s ", stringify!($request), " may be refused for, with their numbers.")]
@@ -80,6 +122,29 @@ macro_rules! messages {
             $($request($request),)*
         }
 
+        $crate::wire::macros::messages!(
+            @command_enum [] $([$(#[$request_meta])*] $request { $($(#[$field_meta])* $field: $field_type),* })*
+        );
+
+        impl Command {
+            /// The message for this command. `sent_at` is the client's session clock in µs now; only commands that
+            /// expire carry it.
+            pub fn request(self, request_id: RequestId, sent_at: u32) -> Message {
+                return match self {
+                    $(Command::$request { $($field),* } => $crate::wire::macros::messages!(
+                        @command_message $($expires)? $request [request_id, sent_at] { $($field),* }
+                    ),)*
+                };
+            }
+
+            /// Whether the drone refuses it as too late when older than `COMMAND_EXPIRY_US` (protocol.md §5.3).
+            pub fn expires(self) -> bool {
+                return match self {
+                    $(Command::$request { .. } => $crate::wire::macros::messages!(@expires $($expires)?),)*
+                };
+            }
+        }
+
         /// Which request a Reply answers, for the answers that don't depend on it ("malformed").
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum RequestType {
@@ -113,6 +178,14 @@ macro_rules! messages {
         }
 
         impl Message {
+            /// The command a command message carries; `None` for other messages.
+            pub fn command(&self) -> Option<Command> {
+                return match self {
+                    $(Message::$request(_message) => Some(Command::$request { $($field: _message.$field),* }),)*
+                    _ => None,
+                };
+            }
+
             fn message_type(&self) -> u8 {
                 return match self {
                     $(Message::$name(_) => $type,)*

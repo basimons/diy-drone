@@ -171,21 +171,16 @@ messages! {
             kind: EventKind,
         },
     }
-    requests {
+    commands {
         /// Accepted only while the transmitter's arm switch is on (drone-design.md, "Failsafes").
         Arm = 0x20 {} refused ArmRefusal { BatteryLow, ThrottleNotLow, ImuNotReady, ArmSwitchOff },
         /// Never refused: disarming must always work.
         Disarm = 0x21 {},
-        /// Expires: refused as `TooLate` when older than `COMMAND_EXPIRY_US`.
-        TakeOff = 0x22 {
-            sent_at: u32, // client's session clock in µs when the pilot gave the command; a resend keeps it
-        } refused TakeOffRefusal { NotArmed, BatteryLow, TooLate },
+        TakeOff = 0x22 expires {} refused TakeOffRefusal { NotArmed, BatteryLow, TooLate },
         Land = 0x23 {} refused LandRefusal { NotFlying },
         /// "Not supported" until GPS is fitted.
         GoHome = 0x24 {},
-        /// Expires like TakeOff.
-        Flip = 0x25 {
-            sent_at: u32, // like TakeOff
+        Flip = 0x25 expires {
             direction: u16, // 0 = forward, clockwise seen from above, a full circle over 0 … 65535
             duration_ms: u16,
         } refused FlipRefusal { NotArmed, NotFlying, TooLow, TooLate },

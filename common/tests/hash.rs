@@ -22,6 +22,7 @@ fn public_types_are_hashable() {
         key_type::<Pong>(),
         key_type::<Arm>(),
         key_type::<Flip>(),
+        key_type::<Command>(),
         key_type::<UnknownType>(),
         key_type::<RequestId>(),
         key_type::<Reply>(),
