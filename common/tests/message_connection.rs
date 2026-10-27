@@ -64,7 +64,7 @@ fn hello_keeps_unknown_option_bits() {
 
 #[test]
 fn unknown_options_never_hold_a_known_bit() {
-    // Otherwise encoding would drop the bit, and the message wouldn't decode back the same.
+    // Otherwise a known option could be set in two places, and the Hello wouldn't decode back the same.
     let options = hello_options(&[1, 0xFF, 0xFF, 0xFF, 0xFF]);
     assert_eq!(options.known, Options { authentication: true });
     assert_eq!(options.unknown.bits(), 0xFFFF_FFFE);
@@ -73,15 +73,16 @@ fn unknown_options_never_hold_a_known_bit() {
 
 #[test]
 fn hello_reply_only_holds_options_the_drone_knows() {
-    // protocol.md §5.1: the options the drone accepted, and it can't accept a bit without a meaning.
-    assert_eq!(
-        decode(HELLO_REPLY, &[1, 0, 0x20, 0, 0, 0]),
-        Err(MessageError::InvalidValue)
-    );
-    assert_eq!(
-        decode(HELLO_REPLY, &[1, 0, 0, 0, 0, 0x80]),
-        Err(MessageError::InvalidValue)
-    );
+    // protocol.md §5.1: the options the drone accepted, only ones the client asked for, so only ones it knows. Also
+    // with "version mismatch" from a newer drone.
+    let unknown_bits: [&[u8]; 3] = [&[1, 0, 0x20, 0, 0, 0], &[1, 0, 0, 0, 0, 0x80], &[2, 1, 0x20, 0, 0, 0]];
+    for payload in unknown_bits {
+        assert_eq!(
+            decode(HELLO_REPLY, payload),
+            Err(MessageError::InvalidValue),
+            "{payload:?}"
+        );
+    }
     let accepted = decode(HELLO_REPLY, &[1, 0, 0x01, 0, 0, 0]);
     let reply = HelloReply {
         protocol_version: 1,

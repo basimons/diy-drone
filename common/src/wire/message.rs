@@ -139,15 +139,7 @@ wire_struct!(
 pub const COMMAND_EXPIRY_US: u32 = 300_000;
 
 mod sealed {
-    use super::{Answer, Outcome, Request};
-
-    /// Outside the crate `Request` can't be implemented, and `answer` is only reached through `Reply::to`.
-    pub trait Sealed {
-        /// The `Answer` variant for this request.
-        fn answer(outcome: Outcome<<Self as Request>::Refusal>) -> Answer
-        where
-            Self: Request;
-    }
+    pub trait Sealed {}
 }
 
 /// A message the drone answers, with a Reply or a data message (protocol.md §5.0). Sealed: only the requests of
@@ -157,6 +149,10 @@ pub trait Request: sealed::Sealed {
     type Refusal: Code<Repr = u16>;
 
     fn request_id(&self) -> RequestId;
+
+    /// The `Answer` variant for this request. A bare `Answer` is harmless: only `Reply::to` pairs it with the
+    /// request's Request ID.
+    fn answer(outcome: Outcome<Self::Refusal>) -> Answer;
 }
 
 messages! {

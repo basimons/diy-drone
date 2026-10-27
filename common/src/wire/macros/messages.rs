@@ -104,17 +104,17 @@ macro_rules! messages {
                 }
             )?
 
-            impl sealed::Sealed for $request {
-                fn answer(outcome: Outcome<<Self as Request>::Refusal>) -> Answer {
-                    return Answer::$request(outcome);
-                }
-            }
+            impl sealed::Sealed for $request {}
 
             impl Request for $request {
                 type Refusal = $crate::wire::macros::messages!(@refusal $($refusal)?);
 
                 fn request_id(&self) -> RequestId {
                     return self.request_id;
+                }
+
+                fn answer(outcome: Outcome<Self::Refusal>) -> Answer {
+                    return Answer::$request(outcome);
                 }
             }
         )*
