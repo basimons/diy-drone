@@ -818,7 +818,7 @@ First streams (field layouts defined in `drone-common`, units as given):
 
 | ID | Stream | Units |
 |----|--------|-------|
-| 1 | Status: arm state (disarmed / armed / flying), flight mode, battery (estimated charge left, from the pack voltage), protection cause, IMU error | battery in % (0 … 100) |
+| 1 | Status: arm state (disarmed / armed / flying), flight mode, battery (estimated charge left, from the pack voltage), protection cause, IMU state (starting / ready / error) | battery in % (0 … 100) |
 | 2 | Attitude (roll, pitch, yaw) | 0.01° |
 | 3 | Height | cm |
 | 4 | Raw IMU (accel, gyro) | sensor units, documented per field |
@@ -944,7 +944,7 @@ Two shared crates, both `no_std` (no operating system or heap needed) so the fli
 common/src/
   domain.rs    internal state: Sticks, Command, ArmState, ArmSwitch, FlightMode, LinkHealth (with Uptime, this
                side's own clock), RcChannels (raw CRSF channel values); what the drone reports: DroneStatus
-               (with BatteryPercent; ProtectionCause re-exported); later settings values, attitude, height
+               (with BatteryPercent, ImuState; ProtectionCause re-exported); later settings values, attitude, height
   wire/        our protocol
     crc16.rs      (private)
     cobs.rs       (private)
