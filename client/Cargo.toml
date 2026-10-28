@@ -1,6 +1,6 @@
 [package]
 name = "drone-client"
-description = "Ground client: reads the gamepad, encodes CRSF, sends it to the ELRS TX module over USB serial"
+description = "Ground client: reads the gamepad, sends our link protocol to the ELRS TX module over USB serial"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

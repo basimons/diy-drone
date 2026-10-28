@@ -1,0 +1,12 @@
+[package]
+name = "drone-link"
+description = "Link behaviour both sides need: acknowledging, resending, round-trip time, remembering IDs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+drone-common.workspace = true
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["common", "client", "fc"]
+members = ["common", "link", "client", "fc"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,6 +9,7 @@ license = "MIT"
 
 [workspace.dependencies]
 drone-common = { path = "common" }
+drone-link = { path = "link" }
 anyhow = "1"
 
 [workspace.lints.clippy]

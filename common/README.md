@@ -108,7 +108,7 @@ fn client(link: &mut (impl Read + Write)) -> Result<(), Box<dyn Error>> {
 
 Answers every request: with its outcome, or with "malformed" / "unknown type" when it doesn't decode. Deciding
 *whether* to arm or flip is the flight code's job; the types only let it answer with reasons that request may have.
-Not shown: acknowledging and resending (protocol.md §5.0a), remembering the last 16 Request IDs so a resent
+Not shown: acknowledging and resending (protocol.md §5.0a), remembering the last `DRONE_ID_WINDOW` (32) Request IDs so a resent
 request is not executed twice, and refusing an old TakeOff or Flip with `command.refuse_too_late()` (§5.3).
 
 ```rust
@@ -185,7 +185,7 @@ fn drone(link: &mut (impl Read + Write), flight: &mut Flight) -> Result<(), Box<
 
 | Module | Public items | What it is |
 |--------|--------------|------------|
-| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Ack`, `Arm`, `Flip`, …), `Command`, `CommandMessage`, `FlightMode`, `HelloResult`, `Options` (known options), `HelloOptions` (also the `UnknownOptions` a Hello may carry), the refusal codes (`ArmRefusal`, …), `Request`, `RequestId`, `Answer`, `RequestType`, `UnknownType`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode`. Each message is defined once, in one list |
+| `wire::message` | `Message`, one struct per message (`Hello`, `Ping`, `Ack`, `Arm`, `Flip`, …), `Command`, `CommandMessage`, `FlightMode`, `HelloResult`, `Options` (known options), `HelloOptions` (also the `UnknownOptions` a Hello may carry), the refusal codes (`ArmRefusal`, …), `Request`, `RequestId`, `Answer`, `RequestType`, `UnknownType`, `MessageError` | The messages of protocol.md §5 and their `encode` / `decode`. Each message is defined once, in one list. `is_reliable` says which must arrive; `sequences_before` and `ACK_REACH` are the Sequence arithmetic the Ack uses; `DRONE_ID_WINDOW` and `CLIENT_ID_WINDOW` how many IDs each side remembers (protocol.md §5.0a) |
 | `wire::reply` | `Reply`, `Outcome`, `Reason` | The drone's answer to a request, typed per request: only combinations the protocol allows can be built, and only as the answer to a request. Every refusal enum (`FlipRefusal`, …) converts into the shared `Reason`, so the client can handle any refusal in one place. `Reply::to(&request, outcome)` takes the Request ID and type from the request; `Reply::to_invalid(&packet)` answers a packet that didn't decode |
 | `wire::event` | `Event` (the message), `EventId`, `EventKind`, one struct per event (`Armed`, `BatteryLow { millivolts }`, …), `EventLevel`, `ProtectionCause`, `FlightModeChanged`, `Text`, `EventText`, `FixedEvent` | What the drone reports on its own; each event holds only its own data. `EventText` is a string without heap: use it like a `&str`, build it with `EventText::format(format_args!(…))` |
 | `wire::packet` | `Packet`, `PacketError`, `MAX_PACKET_LEN` | A checked packet: `parse`, `sequence`, `as_bytes` |
@@ -197,9 +197,8 @@ The CRC-16 and COBS code itself is private.
 
 ## What is not in here
 
-- **Sequence counters.** The caller keeps its own outgoing counter (use `wrapping_add`) and decides what to do
-  with incoming sequence numbers (gaps, stale messages). Helpers for that arithmetic would go in a separate
-  `drone-link` crate, which doesn't exist yet.
+- **Sequence counters.** The caller keeps its own outgoing counter (use `wrapping_add`). Acknowledging, resending
+  and spotting gaps in incoming sequence numbers are in the `drone-link` crate ([../link/README.md](../link/README.md)).
 - **Decisions and I/O.** Whether to obey a request, timers, serial ports and sockets live in `fc` and `client`.
 
 ## Tests
