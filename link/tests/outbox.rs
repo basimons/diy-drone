@@ -269,3 +269,26 @@ fn no_round_trip_is_measured_for_a_message_that_already_timed_out() {
     on_ack(&mut outbox, ack(1, 0), at(400)); // a late Ack for the first copy: no longer in the outbox
     assert_eq!(outbox.rtt().smoothed(), INITIAL_RTT);
 }
+
+#[test]
+fn discard_takes_out_the_oldest_match() {
+    // E.g. a full outbox on the drone makes room by dropping its oldest Event.
+    let mut outbox = sent::<4>(&[(1, "event 1"), (2, "reply"), (3, "event 2")]);
+    assert_eq!(outbox.discard(|item| return item.starts_with("event")), Some("event 1"));
+    assert_eq!(outbox.discard(|item| return item.starts_with("nothing")), None);
+    assert_eq!(
+        on_ack(&mut outbox, ack(3, 0b1), at(10)),
+        [Delivery::Acknowledged("reply"), Delivery::Acknowledged("event 2")]
+    );
+}
+
+#[test]
+fn discard_does_not_end_the_doubling() {
+    // Unlike `acknowledge`: nothing arrived, so the link is no better than before.
+    let mut outbox = sent::<4>(&[(1, "a")]);
+    timeouts(&mut outbox, at(320));
+    outbox.send(2, "a", at(320)).unwrap();
+    outbox.send(3, "b", at(320)).unwrap();
+    outbox.discard(|&item| return item == "b");
+    assert_eq!(outbox.next_timeout(at(320)), Some(Duration::from_millis(2 * 320)));
+}

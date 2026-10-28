@@ -155,6 +155,7 @@ This works like QUIC (the protocol under HTTP/3), not like TCP: nothing waits fo
   - no Ack covers it within the **probe timeout**: smoothed RTT + max(4 × RTT variation, 1 ms) + 20 ms. Each probe timeout in a row doubles it; an Ack resets it.
 - **Resending:** a lost message is sent again with a new Sequence and its ID unchanged: the Request ID, or the Event ID of an Event. The receiver recognises the ID and doesn't act twice: the drone remembers the last 16 Request IDs, the client the last 16 Event IDs and the Request IDs it got answers for.
 - **Round-trip time (RTT):** when an Ack's Largest Received is a reliable message not acknowledged before, RTT sample = now − when that message was sent − Ack Delay. A resend has its own Sequence, so a sample can't be mistaken for an earlier copy (TCP's problem). As in QUIC (RFC 9002): smoothed RTT = ⅞ smoothed RTT + ⅛ sample, RTT variation = ¾ RTT variation + ¼ |smoothed RTT − sample|. Until the first sample: the Ping/Pong round trip if there is one, else 100 ms.
+- **A full outbox on the drone** (its Replies and Events waiting for Acks) makes room by dropping its oldest Event, or, when it holds only Replies, its oldest Reply. A dropped message is never resent. A missed Event is shown again by the Status stream. A dropped Reply leaves the client without the answer to that request: the Ack already told it the request arrived, so it doesn't ask again. That needs Acks to be lost for a long time while requests keep arriving, which is rare, and accepted for now.
 - **At most 16 unacknowledged requests at once.** The drone remembers 16 Request IDs, so a request the client may still resend is always among them and is never executed twice.
 - **Giving up:** TakeOff and Flip expire after 300 ms (§5.3). Everything else is resent until it is acknowledged, the link is declared lost (§6 rule 4), or a new Hello starts a new session; nothing from an old session is resent.
 
@@ -989,7 +990,7 @@ link/src/
 ```
 
 - Each piece works on its own; `fc` and `client` combine them. They report what is true about the link (this message is lost, this Request ID is a repeat) and leave what to do about it to the caller: whether to resend a lost message, drop an expired one, or act on a repeat.
-- Sizes are the caller's. On the client, `Outbox<Message, 16>` matches the 16 Request IDs the drone remembers. The drone's outbox holds its Replies and Events: at most 16 Replies (one per request in flight) plus the Events not yet acknowledged, so 32 to start; when it is full, the caller decides what to drop (e.g. Debug-level Events first).
+- Sizes are the caller's. On the client, `Outbox<Message, 16>` matches the 16 Request IDs the drone remembers. The drone's outbox holds its Replies and Events, 32 to start; when it is full, the drone drops by the rule in §5.0a using `Outbox::discard`.
 - Which messages are reliable is a fact about the message, so it is `Message::is_reliable` in `drone-common`.
 - Later: the auth tag computation.
 

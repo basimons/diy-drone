@@ -14,7 +14,7 @@ Each one works on its own; `fc` and `client` combine them.
 
 | Module | Type | What it does |
 |--------|------|--------------|
-| `outbox` | `Outbox<T, N>` | Sending side. Holds up to `N` reliable messages until they are acknowledged. From an Ack (`on_ack`) or the probe timeout (`check_timeouts`) it reports each one as `Delivery::Acknowledged` or `Delivery::Lost`, in send order. `acknowledge` takes out a request whose answer arrived. `T` is whatever you want back: the message, or an index into your own list |
+| `outbox` | `Outbox<T, N>` | Sending side. Holds up to `N` reliable messages until they are acknowledged. From an Ack (`on_ack`) or the probe timeout (`check_timeouts`) it reports each one as `Delivery::Acknowledged` or `Delivery::Lost`, in send order. `acknowledge` takes out a request whose answer arrived; `discard` makes room in a full outbox (the drone drops its oldest Event, else its oldest Reply). `T` is whatever you want back: the message, or an index into your own list |
 | `ack` | `AckTracker` | Receiving side. Records which Sequences arrived (feed it from the session's first message, the Hello or HelloReply), says when an Ack is owed (`ack_due`, at most `MAX_ACK_DELAY` = 20 ms after a reliable message) and builds it (`ack`). Each arrival is `Newest { skipped }`, `Late`, `Duplicate` or `TooOld`, for counting gaps |
 | `rtt` | `RttEstimator` | Round-trip time (RTT): smoothed RTT and its variation as in QUIC (RFC 9002), and the probe timeout that follows. The `Outbox` keeps one; start it from a Ping/Pong if you have one |
 | `recent_ids` | `RecentIds<Id, N>` | "Have I handled this ID among the last `N`?" The drone uses it for Request IDs, the client for Event IDs and answered Request IDs |
@@ -89,4 +89,5 @@ and both outboxes end up empty.
 
 [tests/smoke.rs](tests/smoke.rs) runs a client and a drone through every layer: messages, packets, COBS frames and
 these pieces, over a simulated radio link that loses, damages and splits frames (up to 30% loss). Every request must
-be executed and answered exactly once, every event shown once, and nothing may be left to resend.
+be executed and answered exactly once, every event shown once, and nothing may be left to resend. With a tiny
+drone outbox (2) it checks the drop rule: only dropped messages may go missing, and nothing is ever shown twice.

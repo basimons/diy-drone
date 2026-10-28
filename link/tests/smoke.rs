@@ -103,17 +103,17 @@ impl Air {
 }
 
 /// The protocol layers one side runs, as `fc` or `client` would put them together.
-struct Link {
+struct Link<const N: usize> {
     session_start: u64,
     next_sequence: u16,
     acks: AckTracker,
-    outbox: Outbox<Message, 32>,
+    outbox: Outbox<Message, N>,
     decoder: StreamDecoder,
     damaged_frames: u32, // frames that arrived but failed COBS or the CRC
     skipped: u32,        // gaps the AckTracker counted
 }
 
-impl Link {
+impl<const N: usize> Link<N> {
     fn new() -> Self {
         return Self {
             session_start: 0,
@@ -214,7 +214,7 @@ impl Link {
 }
 
 struct Client {
-    link: Link,
+    link: Link<32>, // the client never has more than 16 requests waiting
     connected: bool,
     last_hello: Option<u64>,
     next_request: u16,
@@ -312,17 +312,19 @@ impl Client {
     }
 }
 
-struct Drone {
-    link: Link,
+struct Drone<const N: usize> {
+    link: Link<N>,
     connected: bool,
     confirmed: bool, // the client's first message after its Hello arrived: it has the HelloReply
     handled: RecentIds<RequestId, 16>,
     executed: HashMap<RequestId, u32>,
     next_event: u16,
     sticks_received: u32,
+    dropped_events: Vec<EventId>, // discarded from a full outbox: the client may never see them
+    dropped_replies: Vec<RequestId>, // the same, for Replies: the client may never get the answer
 }
 
-impl Drone {
+impl<const N: usize> Drone<N> {
     fn new() -> Self {
         return Self {
             link: Link::new(),
@@ -332,6 +334,8 @@ impl Drone {
             executed: HashMap::new(),
             next_event: 0,
             sticks_received: 0,
+            dropped_events: Vec::new(),
+            dropped_replies: Vec::new(),
         };
     }
 
@@ -362,13 +366,36 @@ impl Drone {
                 match self.handled.remember(command.request_id()) {
                     Seen::New => {
                         *self.executed.entry(command.request_id()).or_default() += 1;
-                        self.link.send(air, now, Message::Reply(command.reply(Outcome::Ok)));
+                        self.send_reliable(air, now, Message::Reply(command.reply(Outcome::Ok)));
                     }
                     Seen::Repeat => {} // acknowledged above; its Reply is resent by the outbox until acknowledged
                 }
             }
             _ => {}
         }
+    }
+
+    /// A full outbox makes room: the oldest Event goes first, the oldest Reply only when it holds nothing else
+    /// (protocol.md §5.0a).
+    fn send_reliable(&mut self, air: &mut Air, now: u64, message: Message) {
+        if self.link.outbox.is_full() {
+            let dropped = self
+                .link
+                .outbox
+                .discard(|sent| return matches!(sent, Message::Event(_)))
+                .or_else(|| {
+                    return self
+                        .link
+                        .outbox
+                        .discard(|sent| return matches!(sent, Message::Reply(_)));
+                });
+            match dropped {
+                Some(Message::Event(event)) => self.dropped_events.push(event.event_id),
+                Some(Message::Reply(reply)) => self.dropped_replies.push(reply.request_id()),
+                other => panic!("the drone's outbox only holds Events and Replies, not {other:?}"),
+            }
+        }
+        self.link.send(air, now, message);
     }
 
     fn act(&mut self, air: &mut Air, now: u64) {
@@ -384,21 +411,21 @@ impl Drone {
                 event_id: EventId(self.next_event),
                 kind,
             };
-            self.link.send(air, now, Message::Event(event));
+            self.send_reliable(air, now, Message::Event(event));
             self.next_event = self.next_event.wrapping_add(1);
         }
     }
 }
 
-struct Run {
+struct Run<const N: usize> {
     end_us: u64, // when nothing was left to resend
     client: Client,
-    drone: Drone,
+    drone: Drone<N>,
     up: Air,   // client → drone
     down: Air, // drone → client
 }
 
-fn simulate(seed: u64, drop_percent: u64, damage_percent: u64) -> Run {
+fn simulate<const N: usize>(seed: u64, drop_percent: u64, damage_percent: u64) -> Run<N> {
     let mut client = Client::new();
     let mut drone = Drone::new();
     let mut up = Air::new(seed, drop_percent, damage_percent);
@@ -437,7 +464,7 @@ fn simulate(seed: u64, drop_percent: u64, damage_percent: u64) -> Run {
 
 /// Everything protocol.md §5.0a promises: each request executed once and answered once, each event shown once,
 /// nothing left waiting at the end.
-fn check(seed: u64, run: &Run) {
+fn check<const N: usize>(seed: u64, run: &Run<N>) {
     let Run {
         client,
         drone,
@@ -447,24 +474,28 @@ fn check(seed: u64, run: &Run) {
     } = run;
     let requests = client.next_request;
     assert!(requests > 50, "seed {seed}: only {requests} requests sent");
-    for id in 0..requests {
-        assert_eq!(
-            drone.executed.get(&RequestId(id)),
-            Some(&1),
-            "seed {seed}: request {id} executed"
-        );
-        assert_eq!(
-            client.answers.get(&RequestId(id)),
-            Some(&1),
-            "seed {seed}: request {id} answered"
+    for id in (0..requests).map(RequestId) {
+        assert_eq!(drone.executed.get(&id), Some(&1), "seed {seed}: {id:?} executed");
+        // A dropped Reply may still have arrived before it was dropped; then it is shown once too.
+        let answers = client.answers.get(&id).copied().unwrap_or(0);
+        let expected = if drone.dropped_replies.contains(&id) {
+            0..=1
+        } else {
+            1..=1
+        };
+        assert!(
+            expected.contains(&answers),
+            "seed {seed}: {id:?} answered {answers} times"
         );
     }
-    for id in 0..drone.next_event {
-        assert_eq!(
-            client.events_shown.get(&EventId(id)),
-            Some(&1),
-            "seed {seed}: event {id} shown"
-        );
+    for id in (0..drone.next_event).map(EventId) {
+        let shown = client.events_shown.get(&id).copied().unwrap_or(0);
+        let expected = if drone.dropped_events.contains(&id) {
+            0..=1
+        } else {
+            1..=1
+        };
+        assert!(expected.contains(&shown), "seed {seed}: {id:?} shown {shown} times");
     }
     assert!(
         client.link.outbox.is_empty(),
@@ -476,17 +507,14 @@ fn check(seed: u64, run: &Run) {
     );
     // Damaged frames are dropped, never decoded into something else (`receive` would panic). A bit flipped into 0x00
     // ends the frame early, so one damaged frame can arrive as two broken ones.
-    for (link, air) in [(&drone.link, up), (&client.link, down)] {
-        assert!(
-            (air.damaged..=2 * air.damaged).contains(&link.damaged_frames),
-            "seed {seed}"
-        );
+    for (damaged_frames, air) in [(drone.link.damaged_frames, up), (client.link.damaged_frames, down)] {
+        assert!((air.damaged..=2 * air.damaged).contains(&damaged_frames), "seed {seed}");
     }
 }
 
 #[test]
 fn a_perfect_link_delivers_everything() {
-    let run = simulate(1, 0, 0);
+    let run = simulate::<32>(1, 0, 0);
     check(1, &run);
     assert_eq!(run.drone.sticks_received, run.client.sticks_sent);
     assert_eq!(run.drone.link.skipped, 0);
@@ -496,7 +524,7 @@ fn a_perfect_link_delivers_everything() {
 #[test]
 fn a_lossy_link_still_delivers_every_request_and_event_exactly_once() {
     for seed in 1..=20 {
-        let run = simulate(seed, 10, 3);
+        let run = simulate::<32>(seed, 10, 3);
         check(seed, &run);
         assert!(
             run.up.dropped > 0 && run.down.dropped > 0 && run.up.damaged > 0,
@@ -517,13 +545,13 @@ fn a_lossy_link_still_delivers_every_request_and_event_exactly_once() {
 #[test]
 fn a_very_bad_link_still_delivers() {
     for seed in 1..=5 {
-        let run = simulate(seed, 30, 5);
+        let run = simulate::<32>(seed, 30, 5);
         check(seed, &run);
         print_stats(seed, &run);
     }
 }
 
-fn print_stats(seed: u64, run: &Run) {
+fn print_stats<const N: usize>(seed: u64, run: &Run<N>) {
     let Run {
         client,
         drone,
@@ -547,4 +575,37 @@ fn print_stats(seed: u64, run: &Run) {
         drone.link.outbox.rtt().smoothed(),
         run.end_us / 1_000,
     );
+}
+
+#[test]
+fn a_full_drone_outbox_drops_events_before_replies() {
+    // An outbox of 2 on a bad link fills up all the time, often with Replies only: both cases of the rule happen.
+    let (mut requests, mut unanswered, mut dropped_events, mut dropped_replies) = (0, 0, 0, 0);
+    for seed in 1..=10 {
+        let run = simulate::<2>(seed, 30, 5);
+        check(seed, &run);
+        requests += usize::from(run.client.next_request);
+        unanswered += (0..run.client.next_request)
+            .filter(|&id| return !run.client.answers.contains_key(&RequestId(id)))
+            .count();
+        dropped_events += run.drone.dropped_events.len();
+        dropped_replies += run.drone.dropped_replies.len();
+    }
+    println!(
+        "outbox of 2, 10 seeds: {requests} requests, {unanswered} never answered; {dropped_events} Events and \
+         {dropped_replies} Replies dropped"
+    );
+    assert!(
+        dropped_events > 0 && dropped_replies > 0,
+        "both cases of the rule should happen"
+    );
+}
+
+#[test]
+fn a_normal_drone_outbox_drops_nothing() {
+    for seed in 1..=20 {
+        let run = simulate::<32>(seed, 10, 3);
+        assert_eq!(run.drone.dropped_events, [], "seed {seed}");
+        assert_eq!(run.drone.dropped_replies, [], "seed {seed}");
+    }
 }

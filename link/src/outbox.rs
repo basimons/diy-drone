@@ -147,12 +147,17 @@ impl<T, const N: usize> Outbox<T, N> {
 
     /// Takes out the first item `matches` picks: a request whose answer arrived, which acknowledges it too
     /// (protocol.md §5.0a). Like an Ack, that ends the doubling of the probe timeout.
-    pub fn acknowledge(&mut self, mut matches: impl FnMut(&T) -> bool) -> Option<T> {
-        let index = self.iter().position(|pending| return matches(&pending.item))?;
-        let acknowledged = self.pending[index].take();
-        self.pending[index..].rotate_left(1); // the rest move up, keeping their order
+    pub fn acknowledge(&mut self, matches: impl FnMut(&T) -> bool) -> Option<T> {
+        let acknowledged = self.take_first(matches)?;
         self.backoff = None;
-        return acknowledged.map(|pending| return pending.item);
+        return Some(acknowledged);
+    }
+
+    /// Takes out the oldest item `matches` picks, which then is never resent: making room in a full outbox (on the
+    /// drone: its oldest Event, else its oldest Reply; protocol.md §5.0a). Unlike `acknowledge`, nothing arrived, so
+    /// the probe timeout stays as it is.
+    pub fn discard(&mut self, matches: impl FnMut(&T) -> bool) -> Option<T> {
+        return self.take_first(matches);
     }
 
     pub fn rtt(&self) -> &RttEstimator {
@@ -175,6 +180,13 @@ impl<T, const N: usize> Outbox<T, N> {
     fn probe_timeout(&self) -> Duration {
         let doublings = self.backoff.map_or(0, |backoff| return backoff.doublings);
         return self.rtt.probe_timeout().saturating_mul(1 << doublings);
+    }
+
+    fn take_first(&mut self, mut matches: impl FnMut(&T) -> bool) -> Option<T> {
+        let index = self.iter().position(|pending| return matches(&pending.item))?;
+        let taken = self.pending[index].take();
+        self.pending[index..].rotate_left(1); // the rest move up, keeping their order
+        return taken.map(|pending| return pending.item);
     }
 
     fn iter(&self) -> impl Iterator<Item = &Pending<T>> {
