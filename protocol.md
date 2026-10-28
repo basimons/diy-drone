@@ -1019,4 +1019,5 @@ link/src/
 
 - CRSF channel → internal state mapping (which AUX channel is arm, flight mode, flip, etc.).
 - Exact stream field layouts and settings group layouts beyond what is listed.
+- RTT on a good link: the client rarely measures one, because a drone Ack's Largest Received is almost always a Sticks message, which isn't in the outbox (found by `link/tests/smoke.rs`). It then keeps the starting 100 ms, so a lost request is resent later than needed. Planned fix: the client sends a Ping about once a second and feeds the Pong's round trip into its outbox's RTT estimate.
 - Default stream rates. The 20 ms ack delay, 300 ms expiry and 100 ms starting RTT are first guesses, to be measured.
