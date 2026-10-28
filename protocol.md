@@ -974,9 +974,23 @@ common/src/
 - Settings group and stream layouts (once those messages exist); Reason and event codes.
 - Tests: round-trip every message; corrupted/truncated packets are rejected; COBS edge cases (zeros, 254-byte runs, max size); streams split at every chunk size.
 
-**`drone-link`: behaviour both sides need.** Depends on `drone-common`, never the other way around (Rust forbids circular dependencies between crates, so the boundary enforces itself). Created when its first piece is needed.
+**`drone-link`: behaviour both sides need.** Depends on `drone-common`, never the other way around (Rust forbids circular dependencies between crates, so the boundary enforces itself). See [link/README.md](link/README.md).
 
-- Sequence-gap counting, the delivery bookkeeping of §5.0a (what to acknowledge, what is lost, the RTT estimate; the caller passes in the time), session-clock helpers, a generic "remember the last N IDs" (Request IDs, Event IDs), the auth tag computation (later).
+```
+link/src/
+  time.rs        SessionTime: a moment on the session clock, `since` with wrapping arithmetic
+  ack.rs         AckTracker: the receiving side, which Sequences arrived (Arrival: newest / late / duplicate / too
+                 old, for counting gaps), when an Ack is owed, building it; MAX_ACK_DELAY
+  outbox.rs      Outbox<T, N>: the sending side, reliable messages not yet acknowledged; reports each as
+                 Delivery::Acknowledged or Delivery::Lost, from Acks and the probe timeout
+  rtt.rs         RttEstimator: smoothed RTT, RTT variation, probe timeout
+  recent_ids.rs  RecentIds<Id, N>: "have I handled this ID among the last N?"
+```
+
+- Each piece works on its own; `fc` and `client` combine them. They report what is true about the link (this message is lost, this Request ID is a repeat) and leave what to do about it to the caller: whether to resend a lost message, drop an expired one, or act on a repeat.
+- Sizes are the caller's. On the client, `Outbox<Message, 16>` matches the 16 Request IDs the drone remembers. The drone's outbox holds its Replies and Events: at most 16 Replies (one per request in flight) plus the Events not yet acknowledged, so 32 to start; when it is full, the caller decides what to drop (e.g. Debug-level Events first).
+- Which messages are reliable is a fact about the message, so it is `Message::is_reliable` in `drone-common`.
+- Later: the auth tag computation.
 
 **Stays in `fc` / `client`:** deciding whether to obey a request, the clocks and timers that drive `drone-link`, link-loss timeouts, the handshake state machine, and all I/O (serial ports, sockets, clocks).
 

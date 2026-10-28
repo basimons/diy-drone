@@ -8,10 +8,11 @@ Hardware, wiring and goals are in [drone-design.md](drone-design.md). The client
 | Folder | Crate | Runs on | What it does |
 |--------|-------|---------|--------------|
 | `common/` | `drone-common` | anywhere (no OS needed) | Shared domain types, our link protocol's messages and framing, and the CRSF byte protocol ([common/README.md](common/README.md)) |
-| `client/` | `drone-client` | Windows, macOS, Linux | Reads the gamepad, encodes CRSF frames, sends them over USB serial to the ELRS transmitter module |
+| `link/` | `drone-link` | anywhere (no OS needed) | Link behaviour both sides need: acknowledging, resending, round-trip time, remembering handled IDs ([link/README.md](link/README.md)) |
+| `client/` | `drone-client` | Windows, macOS, Linux | Reads the gamepad and sends our protocol's messages over USB serial to the ELRS transmitter module, which in Airport mode passes them to the drone unchanged |
 | `fc/` | `drone-fc` | Linux (Raspberry Pi 5, or any board with SPI/I2C/GPIO) | Flight code: sensors, stabilization, motors, protections |
 
-`client` and `fc` both depend on `common`, so the two sides of the link always agree on the format.
+`client` and `fc` both depend on `common` and `link`, so the two sides of the link always agree on the format and the rules.
 
 ## Getting started
 
@@ -52,8 +53,10 @@ Then copy `target/aarch64-unknown-linux-gnu/release/drone-fc` to the Pi.
 
 - [x] Workspace skeleton, hello world in all three projects
 - [x] CRSF checksum (CRC-8/DVB-S2) with test
-- [ ] CRSF RC channel frame encode/decode
-- [ ] Client: gamepad → channels → serial
-- [ ] FC: read CRSF from the receiver UART
+- [x] Our link protocol: messages, framing, checksums (`common`)
+- [x] Delivery: acknowledging, resending, round-trip time (`link`)
+- [ ] Client: gamepad → Sticks → serial
+- [ ] FC: read our protocol from the receiver UART (ELRS Airport mode)
+- [ ] Later, as a fallback: CRSF RC channel frames, to fly with an ordinary ELRS handheld radio
 - [ ] FC: IMU over SPI
 - [ ] FC: motor output, protections

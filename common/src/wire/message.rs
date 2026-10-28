@@ -229,13 +229,23 @@ messages! {
     }
 }
 
+/// How far back an Ack reaches from Largest Received: one bit of Received Before per Sequence (protocol.md §5.0a).
+pub const ACK_REACH: u16 = 32;
+
+/// How many Sequences `sequence` is before `newest`: 0 for `newest` itself, `None` if it is newer. Sequences wrap, so
+/// "before" means less than half the range (0x8000) back.
+pub fn sequences_before(newest: u16, sequence: u16) -> Option<u16> {
+    let distance = newest.wrapping_sub(sequence);
+    return (distance < 0x8000).then_some(distance);
+}
+
 impl Ack {
-    /// Whether this Ack says that the message with this Sequence arrived: `largest_received` itself or one of the 32
-    /// before it with its bit set.
+    /// Whether this Ack says that the message with this Sequence arrived: `largest_received` itself or one of the
+    /// `ACK_REACH` before it with its bit set.
     pub fn acknowledges(&self, sequence: u16) -> bool {
-        return match self.largest_received.wrapping_sub(sequence) {
-            0 => true,
-            distance @ 1..=32 => self.received_before & (1 << (distance - 1)) != 0,
+        return match sequences_before(self.largest_received, sequence) {
+            Some(0) => true,
+            Some(distance @ 1..=ACK_REACH) => self.received_before & (1 << (distance - 1)) != 0,
             _ => false,
         };
     }
@@ -281,6 +291,21 @@ impl Message {
             );
         }
         return message;
+    }
+
+    /// Whether it must arrive: the sender keeps it until it is acknowledged and resends it when lost (protocol.md
+    /// §5.0a). Hello is resent too, but by the handshake, not as a reliable message.
+    pub fn is_reliable(&self) -> bool {
+        // No `_` arm: a new message must be sorted here.
+        return match self {
+            Message::Command(_) | Message::Reply(_) | Message::Event(_) => true,
+            Message::Hello(_)
+            | Message::HelloReply(_)
+            | Message::Ping(_)
+            | Message::Pong(_)
+            | Message::Ack(_)
+            | Message::Sticks(_) => false,
+        };
     }
 
     fn is_handshake(&self) -> bool {
