@@ -134,6 +134,19 @@ wire_struct!(
     RequestId(pub u16)
 );
 
+/// How many Request IDs the drone remembers, to recognise a resent request (protocol.md §5.0a). The client never has
+/// requests waiting whose IDs are this far apart, so a resend is always among them.
+pub const DRONE_ID_WINDOW: usize = 32;
+
+/// How many Event IDs, and Request IDs it got answers for, the client remembers (protocol.md §5.0a). The drone drops an
+/// Event or answer still waiting once it is this far behind the newest, so a resend is always recognised.
+pub const CLIENT_ID_WINDOW: usize = 1024;
+
+const _: () = assert!(
+    DRONE_ID_WINDOW < 0x8000 && CLIENT_ID_WINDOW < 0x8000,
+    "IDs wrap: a window must stay below half"
+);
+
 code!(
     /// What the sticks mean (protocol.md §5.3). Also the internal state's type, as `domain::FlightMode`.
     pub FlightMode: u8 {

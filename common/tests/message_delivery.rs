@@ -127,3 +127,11 @@ fn an_ack_reaches_32_back() {
     assert!(ack.acknowledges(100 - ACK_REACH));
     assert!(!ack.acknowledges(100 - ACK_REACH - 1));
 }
+
+#[test]
+fn the_drone_remembers_32_request_ids_and_the_client_1024_ids() {
+    // protocol.md §5.0a: IDs still waiting are never as far apart as the other side remembers, so a resend is always
+    // recognised. The client has far more memory; both stay well below half the u16 range, where IDs wrap.
+    assert_eq!(DRONE_ID_WINDOW, 32);
+    assert_eq!(CLIENT_ID_WINDOW, 1024);
+}

@@ -1,11 +1,16 @@
 //! Smoke test: a client and a drone talk through every layer (Message → Packet → COBS frame → bytes and back, plus
 //! the delivery pieces of this crate) over a simulated radio link that loses, damages and splits frames. Runs ~15 s
 //! of simulated time per seed, in 1 ms steps, then on until nothing is left to resend.
+//!
+//! Not simulated (yet): reordering and jitter (a UDP/WiFi link; the radio keeps order), limited bandwidth and the two
+//! directions getting different radio time, the drone's Status stream, link-loss timeouts and reconnecting with a new
+//! Hello during a session, Hellos crossing, and TakeOff/Flip expiring.
 
 use core::time::Duration;
 use drone_common::wire::event::{Armed, BatteryLow, Event, EventId, EventKind};
+use drone_common::wire::message::sequences_before;
+use drone_common::wire::message::{CLIENT_ID_WINDOW, DRONE_ID_WINDOW, Message, Options, RequestId, Sticks};
 use drone_common::wire::message::{Command, CommandMessage, FlightMode, Hello, HelloOptions, HelloReply, HelloResult};
-use drone_common::wire::message::{Message, Options, RequestId, Sticks};
 use drone_common::wire::packet::MAX_PACKET_LEN;
 use drone_common::wire::reply::Outcome;
 use drone_common::wire::stream::{self, MAX_FRAME_LEN, StreamDecoder};
@@ -49,21 +54,51 @@ impl Rng {
 
 /// One direction of the radio link: frames arrive `LATENCY_US` later, unless dropped; some get a bit flipped; bytes
 /// come out in chunks of random size, as a serial port hands them over.
-struct Air {
-    rng: Rng,
+/// How bad the radio link is.
+#[derive(Clone)]
+struct Conditions {
     drop_percent: u64,
     damage_percent: u64,
+    outage: core::ops::Range<u64>, // µs: nothing gets through, either way
+}
+
+const PERFECT: Conditions = Conditions {
+    drop_percent: 0,
+    damage_percent: 0,
+    outage: 0..0,
+};
+
+const LOSSY: Conditions = Conditions {
+    drop_percent: 10,
+    damage_percent: 3,
+    outage: 0..0,
+};
+
+const VERY_BAD: Conditions = Conditions {
+    drop_percent: 30,
+    damage_percent: 5,
+    outage: 0..0,
+};
+
+/// Lossy, and nothing at all for 3 s in the middle: requests and their answers pile up and wait a long time.
+const OUTAGE: Conditions = Conditions {
+    outage: 4_000_000..7_000_000,
+    ..LOSSY
+};
+
+struct Air {
+    rng: Rng,
+    conditions: Conditions,
     in_flight: VecDeque<(u64, Vec<u8>)>,
     dropped: u32,
     damaged: u32,
 }
 
 impl Air {
-    fn new(seed: u64, drop_percent: u64, damage_percent: u64) -> Self {
+    fn new(seed: u64, conditions: Conditions) -> Self {
         return Self {
             rng: Rng(seed),
-            drop_percent,
-            damage_percent,
+            conditions,
             in_flight: VecDeque::new(),
             dropped: 0,
             damaged: 0,
@@ -71,12 +106,12 @@ impl Air {
     }
 
     fn transmit(&mut self, now: u64, frame: &[u8]) {
-        if self.rng.percent(self.drop_percent) {
+        if self.rng.percent(self.conditions.drop_percent) || self.conditions.outage.contains(&now) {
             self.dropped += 1;
             return;
         }
         let mut bytes = frame.to_vec();
-        if self.rng.percent(self.damage_percent) {
+        if self.rng.percent(self.conditions.damage_percent) {
             let index = self.rng.below(bytes.len() as u64 - 1) as usize; // not the delimiter
             bytes[index] ^= 1 << self.rng.below(8);
             self.damaged += 1;
@@ -109,8 +144,9 @@ struct Link<const N: usize> {
     acks: AckTracker,
     outbox: Outbox<Message, N>,
     decoder: StreamDecoder,
-    damaged_frames: u32, // frames that arrived but failed COBS or the CRC
-    skipped: u32,        // gaps the AckTracker counted
+    damaged_frames: u32,   // frames that arrived but failed COBS or the CRC
+    invalid_messages: u32, // intact packets that didn't decode: never, from our own side (a CRC miss would be one)
+    skipped: u32,          // gaps the AckTracker counted
 }
 
 impl<const N: usize> Link<N> {
@@ -122,6 +158,7 @@ impl<const N: usize> Link<N> {
             outbox: Outbox::new(RttEstimator::default()),
             decoder: StreamDecoder::new(),
             damaged_frames: 0,
+            invalid_messages: 0,
             skipped: 0,
         };
     }
@@ -160,10 +197,10 @@ impl<const N: usize> Link<N> {
             let mut chunk = &chunk[..];
             while let Some(packet) = self.decoder.next_packet(&mut chunk) {
                 match packet {
-                    Ok(packet) => {
-                        let message = Message::decode(&packet).expect("an intact packet from our own side decodes");
-                        messages.push((packet.sequence(), message));
-                    }
+                    Ok(packet) => match Message::decode(&packet) {
+                        Ok(message) => messages.push((packet.sequence(), message)),
+                        Err(_) => self.invalid_messages += 1,
+                    },
                     Err(_) => self.damaged_frames += 1,
                 }
             }
@@ -181,11 +218,7 @@ impl<const N: usize> Link<N> {
         }
         if let Message::Ack(ack) = message {
             let mut lost = Vec::new();
-            self.outbox.on_ack(ack, clock, |delivery| {
-                if let Delivery::Lost(message) = delivery {
-                    lost.push(message);
-                }
-            });
+            self.outbox.on_ack(ack, clock, collect_lost(&mut lost));
             self.resend(air, now, lost);
         }
     }
@@ -198,11 +231,7 @@ impl<const N: usize> Link<N> {
             self.send(air, now, Message::Ack(ack));
         }
         let mut lost = Vec::new();
-        self.outbox.check_timeouts(clock, |delivery| {
-            if let Delivery::Lost(message) = delivery {
-                lost.push(message);
-            }
-        });
+        self.outbox.check_timeouts(clock, collect_lost(&mut lost));
         self.resend(air, now, lost);
     }
 
@@ -213,16 +242,31 @@ impl<const N: usize> Link<N> {
     }
 }
 
+/// Gathers what the outbox reports lost, to resend once it has returned.
+fn collect_lost(lost: &mut Vec<Message>) -> impl FnMut(Delivery<Message>) + '_ {
+    return |delivery| {
+        if let Delivery::Lost(message) = delivery {
+            lost.push(message);
+        }
+    };
+}
+
+/// Whether `older` is `window` or more IDs before `newer`. IDs wrap like Sequences; one past `newer` is never behind.
+fn behind_by_window(newer: u16, older: u16, window: usize) -> bool {
+    return sequences_before(newer, older).is_some_and(|behind| return usize::from(behind) >= window);
+}
+
 struct Client {
-    link: Link<32>, // the client never has more than 16 requests waiting
+    link: Link<DRONE_ID_WINDOW>, // requests waiting are less than DRONE_ID_WINDOW apart, so they always fit
     connected: bool,
     last_hello: Option<u64>,
     next_request: u16,
-    answered: RecentIds<RequestId, 16>,
-    seen_events: RecentIds<EventId, 16>,
+    answered: RecentIds<RequestId, CLIENT_ID_WINDOW>,
+    seen_events: RecentIds<EventId, CLIENT_ID_WINDOW>,
     answers: HashMap<RequestId, u32>,
     events_shown: HashMap<EventId, u32>,
     sticks_sent: u32,
+    settled_by_answer: u32, // requests whose answer arrived before their Ack
 }
 
 impl Client {
@@ -237,6 +281,7 @@ impl Client {
             answers: HashMap::new(),
             events_shown: HashMap::new(),
             sticks_sent: 0,
+            settled_by_answer: 0,
         };
     }
 
@@ -254,9 +299,10 @@ impl Client {
         match message {
             Message::Reply(reply) => {
                 let request = reply.request_id();
-                self.link.outbox.acknowledge(|sent| {
+                let settled = self.link.outbox.acknowledge(|sent| {
                     return matches!(sent, Message::Command(command) if command.request_id() == request);
                 });
+                self.settled_by_answer += u32::from(settled.is_some());
                 match self.answered.remember(request) {
                     Seen::New => *self.answers.entry(request).or_default() += 1,
                     Seen::Repeat => {} // the Reply was resent: its Ack got lost
@@ -295,8 +341,16 @@ impl Client {
             self.link.send(air, now, Message::Sticks(sticks));
             self.sticks_sent += 1;
         }
-        // At most 16 requests waiting at once: the drone remembers 16 Request IDs (protocol.md §5.0a).
-        if now.is_multiple_of(COMMAND_EVERY_US) && now < QUIET_FROM_US && self.link.outbox.len() < 16 {
+        // A new request stays less than DRONE_ID_WINDOW past every request still waiting, so the drone still remembers
+        // each one it may get again (protocol.md §5.0a).
+        let next = self.next_request;
+        let within_window = self.link.outbox.items().all(|sent| {
+            return match sent {
+                Message::Command(command) => !behind_by_window(next, command.request_id().0, DRONE_ID_WINDOW),
+                _ => true,
+            };
+        });
+        if now.is_multiple_of(COMMAND_EVERY_US) && now < QUIET_FROM_US && within_window {
             let command = match self.next_request % 3 {
                 0 => Command::Arm,
                 1 => Command::SetFlightMode {
@@ -316,12 +370,12 @@ struct Drone<const N: usize> {
     link: Link<N>,
     connected: bool,
     confirmed: bool, // the client's first message after its Hello arrived: it has the HelloReply
-    handled: RecentIds<RequestId, 16>,
+    handled: RecentIds<RequestId, DRONE_ID_WINDOW>,
     executed: HashMap<RequestId, u32>,
     next_event: u16,
     sticks_received: u32,
-    dropped_events: Vec<EventId>, // discarded from a full outbox: the client may never see them
-    dropped_replies: Vec<RequestId>, // the same, for Replies: the client may never get the answer
+    dropped_events: Vec<EventId>,    // never resent: the client may never see them
+    dropped_replies: Vec<RequestId>, // never resent: the client may never get the answer
 }
 
 impl<const N: usize> Drone<N> {
@@ -358,7 +412,10 @@ impl<const N: usize> Drone<N> {
         if !self.connected {
             return;
         }
-        self.confirmed = true;
+        // Only what the client sends after the HelloReply confirms the session; a Ping may come before (protocol.md §5.1).
+        if matches!(message, Message::Sticks(_) | Message::Ack(_) | Message::Command(_)) {
+            self.confirmed = true;
+        }
         self.link.arrived(air, now, sequence, &message);
         match message {
             Message::Sticks(_) => self.sticks_received += 1,
@@ -375,27 +432,41 @@ impl<const N: usize> Drone<N> {
         }
     }
 
-    /// A full outbox makes room: the oldest Event goes first, the oldest Reply only when it holds nothing else
-    /// (protocol.md §5.0a).
+    /// The drone's rules for Events and answers waiting in its outbox (protocol.md §5.0a): drop those that fell
+    /// `CLIENT_ID_WINDOW` behind, and when it is full, drop the oldest Event, or the oldest answer when it holds only
+    /// answers, unless the new message is itself an Event: then that one goes.
     fn send_reliable(&mut self, air: &mut Air, now: u64, message: Message) {
+        while let Some(old) = self.link.outbox.discard(|sent| return too_far_behind(sent, &message)) {
+            self.record_dropped(old);
+        }
         if self.link.outbox.is_full() {
-            let dropped = self
+            let dropped = match self
                 .link
                 .outbox
                 .discard(|sent| return matches!(sent, Message::Event(_)))
-                .or_else(|| {
-                    return self
-                        .link
-                        .outbox
-                        .discard(|sent| return matches!(sent, Message::Reply(_)));
-                });
-            match dropped {
-                Some(Message::Event(event)) => self.dropped_events.push(event.event_id),
-                Some(Message::Reply(reply)) => self.dropped_replies.push(reply.request_id()),
-                other => panic!("the drone's outbox only holds Events and Replies, not {other:?}"),
-            }
+            {
+                Some(event) => event,
+                None if matches!(message, Message::Event(_)) => {
+                    self.record_dropped(message);
+                    return;
+                }
+                None => self
+                    .link
+                    .outbox
+                    .discard(|sent| return matches!(sent, Message::Reply(_)))
+                    .unwrap(),
+            };
+            self.record_dropped(dropped);
         }
         self.link.send(air, now, message);
+    }
+
+    fn record_dropped(&mut self, message: Message) {
+        match message {
+            Message::Event(event) => self.dropped_events.push(event.event_id),
+            Message::Reply(reply) => self.dropped_replies.push(reply.request_id()),
+            other => panic!("the drone only sends Events and Replies as reliable messages, not {other:?}"),
+        }
     }
 
     fn act(&mut self, air: &mut Air, now: u64) {
@@ -417,6 +488,19 @@ impl<const N: usize> Drone<N> {
     }
 }
 
+/// Whether `sent`, still waiting, is as far behind `new` (the same kind) as the client remembers IDs.
+fn too_far_behind(sent: &Message, new: &Message) -> bool {
+    return match (sent, new) {
+        (Message::Event(sent), Message::Event(new)) => {
+            behind_by_window(new.event_id.0, sent.event_id.0, CLIENT_ID_WINDOW)
+        }
+        (Message::Reply(sent), Message::Reply(new)) => {
+            behind_by_window(new.request_id().0, sent.request_id().0, CLIENT_ID_WINDOW)
+        }
+        _ => false,
+    };
+}
+
 struct Run<const N: usize> {
     end_us: u64, // when nothing was left to resend
     client: Client,
@@ -425,15 +509,11 @@ struct Run<const N: usize> {
     down: Air, // drone → client
 }
 
-fn simulate<const N: usize>(seed: u64, drop_percent: u64, damage_percent: u64) -> Run<N> {
+fn simulate<const N: usize>(seed: u64, conditions: &Conditions) -> Run<N> {
     let mut client = Client::new();
     let mut drone = Drone::new();
-    let mut up = Air::new(seed, drop_percent, damage_percent);
-    let mut down = Air::new(
-        seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
-        drop_percent,
-        damage_percent,
-    );
+    let mut up = Air::new(seed, conditions.clone());
+    let mut down = Air::new(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1, conditions.clone());
     let mut now = 0;
     while now < RUN_US || !(client.link.outbox.is_empty() && drone.link.outbox.is_empty()) {
         assert!(
@@ -474,6 +554,23 @@ fn check<const N: usize>(seed: u64, run: &Run<N>) {
     } = run;
     let requests = client.next_request;
     assert!(requests > 50, "seed {seed}: only {requests} requests sent");
+    assert!(
+        drone.next_event > 10,
+        "seed {seed}: only {} events sent",
+        drone.next_event
+    );
+    // Only the IDs that were sent show up, nothing decoded into something else.
+    assert_eq!(drone.executed.len(), usize::from(requests), "seed {seed}");
+    assert!(client.answers.keys().all(|id| return id.0 < requests), "seed {seed}");
+    assert!(
+        client.events_shown.keys().all(|id| return id.0 < drone.next_event),
+        "seed {seed}"
+    );
+    assert_eq!(
+        drone.link.invalid_messages + client.link.invalid_messages,
+        0,
+        "seed {seed}"
+    );
     for id in (0..requests).map(RequestId) {
         assert_eq!(drone.executed.get(&id), Some(&1), "seed {seed}: {id:?} executed");
         // A dropped Reply may still have arrived before it was dropped; then it is shown once too.
@@ -505,8 +602,7 @@ fn check<const N: usize>(seed: u64, run: &Run<N>) {
         drone.link.outbox.is_empty(),
         "seed {seed}: the drone still waits for Acks"
     );
-    // Damaged frames are dropped, never decoded into something else (`receive` would panic). A bit flipped into 0x00
-    // ends the frame early, so one damaged frame can arrive as two broken ones.
+    // A bit flipped into 0x00 ends the frame early, so one damaged frame can arrive as two broken ones.
     for (damaged_frames, air) in [(drone.link.damaged_frames, up), (client.link.damaged_frames, down)] {
         assert!((air.damaged..=2 * air.damaged).contains(&damaged_frames), "seed {seed}");
     }
@@ -514,7 +610,7 @@ fn check<const N: usize>(seed: u64, run: &Run<N>) {
 
 #[test]
 fn a_perfect_link_delivers_everything() {
-    let run = simulate::<32>(1, 0, 0);
+    let run = simulate::<32>(1, &PERFECT);
     check(1, &run);
     assert_eq!(run.drone.sticks_received, run.client.sticks_sent);
     assert_eq!(run.drone.link.skipped, 0);
@@ -523,9 +619,17 @@ fn a_perfect_link_delivers_everything() {
 
 #[test]
 fn a_lossy_link_still_delivers_every_request_and_event_exactly_once() {
+    let mut settled_by_answer = 0;
     for seed in 1..=20 {
-        let run = simulate::<32>(seed, 10, 3);
+        let run = simulate::<32>(seed, &LOSSY);
         check(seed, &run);
+        assert_eq!(
+            run.drone.dropped_events,
+            [],
+            "seed {seed}: a normal outbox drops nothing"
+        );
+        assert_eq!(run.drone.dropped_replies, [], "seed {seed}");
+        settled_by_answer += run.client.settled_by_answer;
         assert!(
             run.up.dropped > 0 && run.down.dropped > 0 && run.up.damaged > 0,
             "seed {seed}: no loss happened"
@@ -540,12 +644,14 @@ fn a_lossy_link_still_delivers_every_request_and_event_exactly_once() {
             print_stats(seed, &run);
         }
     }
+    // protocol.md §5.0a: an answer acknowledges its request too, when the Ack for it was lost.
+    assert!(settled_by_answer > 0, "no answer ever arrived before its Ack");
 }
 
 #[test]
 fn a_very_bad_link_still_delivers() {
     for seed in 1..=5 {
-        let run = simulate::<32>(seed, 30, 5);
+        let run = simulate::<32>(seed, &VERY_BAD);
         check(seed, &run);
         print_stats(seed, &run);
     }
@@ -578,11 +684,12 @@ fn print_stats<const N: usize>(seed: u64, run: &Run<N>) {
 }
 
 #[test]
-fn a_full_drone_outbox_drops_events_before_replies() {
+fn a_tiny_drone_outbox_loses_only_what_it_dropped() {
     // An outbox of 2 on a bad link fills up all the time, often with Replies only: both cases of the rule happen.
+    // The rule here is the test's own drone; `fc` will need its own test for it.
     let (mut requests, mut unanswered, mut dropped_events, mut dropped_replies) = (0, 0, 0, 0);
     for seed in 1..=10 {
-        let run = simulate::<2>(seed, 30, 5);
+        let run = simulate::<2>(seed, &VERY_BAD);
         check(seed, &run);
         requests += usize::from(run.client.next_request);
         unanswered += (0..run.client.next_request)
@@ -602,10 +709,10 @@ fn a_full_drone_outbox_drops_events_before_replies() {
 }
 
 #[test]
-fn a_normal_drone_outbox_drops_nothing() {
-    for seed in 1..=20 {
-        let run = simulate::<32>(seed, 10, 3);
-        assert_eq!(run.drone.dropped_events, [], "seed {seed}");
-        assert_eq!(run.drone.dropped_replies, [], "seed {seed}");
+fn a_long_outage_never_runs_or_shows_anything_twice() {
+    // While one request or event waits, many newer ones get through; the IDs remembered must still cover it.
+    for seed in 1..=40 {
+        let run = simulate::<32>(seed, &OUTAGE);
+        check(seed, &run);
     }
 }

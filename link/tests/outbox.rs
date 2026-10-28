@@ -292,3 +292,11 @@ fn discard_does_not_end_the_doubling() {
     outbox.discard(|&item| return item == "b");
     assert_eq!(outbox.next_timeout(at(320)), Some(Duration::from_millis(2 * 320)));
 }
+
+#[test]
+fn items_shows_what_is_waiting_in_send_order() {
+    // E.g. the client checks that a new Request ID stays within ID_WINDOW of every request still waiting.
+    let mut outbox = sent::<4>(&[(1, "a"), (2, "b"), (3, "c")]);
+    outbox.acknowledge(|&item| return item == "b");
+    assert_eq!(outbox.items().copied().collect::<Vec<_>>(), ["a", "c"]);
+}

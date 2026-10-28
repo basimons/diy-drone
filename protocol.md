@@ -126,8 +126,8 @@ Direction: C→D = client (laptop) to drone, D→C = drone to client. The diagra
 
 - A **request** is any C→D message except Sticks, Hello, Ping and LinkTestData: commands, LinkTest, SetSettings, GetSettings, Subscribe, RequestOnce, ListLogs, ReadLog.
 - Every request payload **starts with a Request ID (u16)**, the client picks it by counting up its requests (wrapping 65535 → 0; every value is valid). It tells the drone "this is the same request as before" and lets the client match answers to requests. It is separate from the packet Sequence.
-- Every request gets **exactly one answer**: its data message (LinkTestResult, Settings, StreamData, LogList, LogChunk, which echo the Request ID), or a Reply. Errors (unknown stream/group/log ID, bad rate, refused) are always a Reply.
-- **Resending** works the same way in both directions (§5.0a). A resent request keeps its **Request ID** and gets a new Sequence. The drone remembers the last 16 Request IDs it handled; a repeat is acknowledged but not executed twice.
+- Every request gets **exactly one answer**: its data message (LinkTestResult, Settings, StreamData, LogList, LogChunk, which echo the Request ID), or a Reply. Errors (unknown stream/group/log ID, bad rate, refused) are always a Reply. The one exception: an answer the drone has to drop (§5.0a, "Making room") never arrives.
+- **Resending** works the same way in both directions (§5.0a). A resent request keeps its **Request ID** and gets a new Sequence. The drone remembers the last 32 Request IDs it handled (`DRONE_ID_WINDOW`); a repeat is acknowledged but not executed twice.
 - Data the drone sends without being asked (default and subscribed streams) is a **StreamUpdate**, which has no Request ID. Whether data answers a request is told by its message type, not by a special Request ID value.
 - The Request ID is 2 bytes (not 1) so that many requests in flight (e.g. pipelined ReadLog over WiFi) never wrap into IDs the drone still remembers.
 
@@ -146,18 +146,24 @@ D→C seq 43   Reply to Request ID 7: OK   ← the drone resends its Reply too: 
 
 This works like QUIC (the protocol under HTTP/3), not like TCP: nothing waits for a lost message, and a resend is a new packet with a new Sequence, so every Sequence is sent only once. **Both sides follow the same rules.**
 
-- **Reliable messages** must arrive: requests, their answers (Reply and the data messages that answer a request) and Events. The sender keeps each one until it is acknowledged, and resends it when it is lost.
+- **Reliable messages** must arrive: requests, their answers (Reply and the data messages that answer a request) and Events. The sender keeps each one until it is acknowledged, and resends it when it is lost; only the drone may give one up, by the rules under "Making room".
 - **Everything else may be lost** and is never resent: Sticks, StreamUpdate, Ping, Pong, LinkTestData and Ack. The next one replaces it; for LinkTestData the losses are what is being measured. Hello and HelloReply are the exception: the client resends Hello until a HelloReply arrives.
 - **Acknowledging:** a side that receives a reliable message sends an **Ack** (below) within 20 ms. One Ack covers every Sequence received so far, reliable or not, so one Ack can acknowledge several messages. An Ack is only sent when a reliable message is waiting to be acknowledged. Acks are never acknowledged or resent: the next Ack repeats what a lost one said.
 - **An answer acknowledges its request too**, so the client stops resending a request once its answer arrives, even if the Ack was lost.
 - **Lost:** the sender counts a reliable message as lost when
   - a message sent 3 or more Sequences after it has been acknowledged (on a byte stream messages arrive in order; over UDP they may not, and 3 leaves room for that), or
   - no Ack covers it within the **probe timeout**: smoothed RTT + max(4 × RTT variation, 1 ms) + 20 ms. Each probe timeout in a row doubles it; an Ack resets it.
-- **Resending:** a lost message is sent again with a new Sequence and its ID unchanged: the Request ID, or the Event ID of an Event. The receiver recognises the ID and doesn't act twice: the drone remembers the last 16 Request IDs, the client the last 16 Event IDs and the Request IDs it got answers for.
+- **Resending:** a lost message is sent again with a new Sequence and its ID unchanged: the Request ID, or the Event ID of an Event. The receiver recognises the ID and doesn't act twice: the drone remembers the last 32 Request IDs (`DRONE_ID_WINDOW`), the client at least the last 1024 Event IDs and the last 1024 Request IDs it got answers for (`CLIENT_ID_WINDOW`; the client has far more memory). IDs wrap like Sequences, so "behind" means less than half the range (0x8000) back.
 - **Round-trip time (RTT):** when an Ack's Largest Received is a reliable message not acknowledged before, RTT sample = now − when that message was sent − Ack Delay. A resend has its own Sequence, so a sample can't be mistaken for an earlier copy (TCP's problem). As in QUIC (RFC 9002): smoothed RTT = ⅞ smoothed RTT + ⅛ sample, RTT variation = ¾ RTT variation + ¼ |smoothed RTT − sample|. Until the first sample: the Ping/Pong round trip if there is one, else 100 ms.
-- **A full outbox on the drone** (its Replies and Events waiting for Acks) makes room by dropping its oldest Event, or, when it holds only Replies, its oldest Reply. A dropped message is never resent. A missed Event is shown again by the Status stream. A dropped Reply leaves the client without the answer to that request: the Ack already told it the request arrived, so it doesn't ask again. That needs Acks to be lost for a long time while requests keep arriving, which is rare, and accepted for now.
-- **At most 16 unacknowledged requests at once.** The drone remembers 16 Request IDs, so a request the client may still resend is always among them and is never executed twice.
-- **Giving up:** TakeOff and Flip expire after 300 ms (§5.3). Everything else is resent until it is acknowledged, the link is declared lost (§6 rule 4), or a new Hello starts a new session; nothing from an old session is resent.
+- **IDs still waiting stay close together,** so a resend is always among the IDs the other side remembers. Counting the messages waiting is not enough: one can wait a long time while many newer ones get through, and the other side forgets by age.
+  - The client never sends a request whose Request ID is 32 (`DRONE_ID_WINDOW`) or more past a request still waiting for its Ack.
+  - The drone drops an Event or answer still waiting once it is 1024 (`CLIENT_ID_WINDOW`) or more behind the newest of its kind: Event IDs for Events, Request IDs for answers.
+- **Making room in the drone's outbox** (its Events and answers waiting for Acks): when it is full, the drone drops its oldest Event. If it holds only answers, it drops the oldest answer, unless the new message is an Event: then it drops that new Event instead, as an answer matters more.
+  - A dropped message is never resent.
+  - A dropped Event is lost to the client. The Status stream (§5.6) shows the current state (armed, flight mode, battery), but one-off Events (Text, Loop overrun, Protection triggered, Link lost) are simply gone.
+  - A dropped answer leaves the client without the outcome of that request. Usually the Ack already told it the request arrived; if not, its resend is a repeat for the drone, which acknowledges it and doesn't answer. Either way the client should show "no answer" after a while.
+  - This needs Acks to be lost for a long time while new messages keep coming, which is rare, and accepted for now. Dropping by Event level (Debug before Error) can come later.
+- **Giving up:** TakeOff and Flip expire after 300 ms (§5.3). Everything else is resent until it is acknowledged, the drone drops it ("Making room" and "IDs still waiting" above), the link is declared lost (§6 rule 4), or a new Hello starts a new session; nothing from an old session is resent.
 
 **Ack** (`0x08`, either direction):
 
@@ -266,7 +272,7 @@ Rules:
 
 - **Until a handshake succeeds, each side ignores everything except Hello, HelloReply, Ping and Pong.** A Ping before the handshake only measures the round trip; its times use no session clock yet.
 - **Hello and HelloReply carry Sequence 0.** On a valid Hello the drone resets both counters; its HelloReply is its message 0.
-- **The drone sends reliable messages only once the session is confirmed:** when a message other than Hello arrives from the client in this session (its Sticks start right after the HelloReply). Before that, a lost HelloReply makes the client send a new Hello, and the new session would drop whatever the drone had sent (found by `link/tests/smoke.rs`).
+- **The drone sends reliable messages only once the session is confirmed:** when a message the client only sends after the HelloReply arrives in this session: Sticks (they start right after the HelloReply), an Ack or a request. A Ping doesn't count, as the client may send one before. Until then, a lost HelloReply makes the client send a new Hello, and the new session would drop whatever the drone had sent. Events that happen before the session is confirmed are dropped; the Status stream shows the current state.
 - **Hello and HelloReply never change**, not even in a new protocol version: their layout, Result codes and the meaning of each option bit stay as they are, so a client and drone of different versions can always tell each other so. Option bits in a Hello that the drone doesn't know are kept, so it can answer "option not supported". A HelloReply never has such bits: the client only asks for options it knows, and the drone only accepts options that were asked for.
 - **A new Hello restarts the session at the protocol layer only:** sequence counters, subscriptions (back to the default set) and the remembered Request IDs. It does **not** touch the internal state (sticks, armed state, settings). Sticks stop arriving while the client reconnects; that gap is handled by the normal link-loss logic like any other silence.
 - When authentication is added, the handshake is also where both sides exchange fresh random numbers for the session (protection against replaying recorded messages). Not now.
@@ -990,7 +996,7 @@ link/src/
 ```
 
 - Each piece works on its own; `fc` and `client` combine them. They report what is true about the link (this message is lost, this Request ID is a repeat) and leave what to do about it to the caller: whether to resend a lost message, drop an expired one, or act on a repeat.
-- Sizes are the caller's. On the client, `Outbox<Message, 16>` matches the 16 Request IDs the drone remembers. The drone's outbox holds its Replies and Events, 32 to start; when it is full, the drone drops by the rule in §5.0a using `Outbox::discard`.
+- Sizes are the caller's. On the client, `Outbox<Message, DRONE_ID_WINDOW>` always has room: requests waiting are less than 32 apart (§5.0a). The client remembers `CLIENT_ID_WINDOW` (1024) Event IDs and answered Request IDs, with `RecentIds` or any list of its own, also on the heap. The drone's outbox holds its Events and answers, 32 to start; it drops by the rules in §5.0a using `Outbox::discard` and `Outbox::items`.
 - Which messages are reliable is a fact about the message, so it is `Message::is_reliable` in `drone-common`.
 - Later: the auth tag computation.
 
@@ -1019,5 +1025,5 @@ link/src/
 
 - CRSF channel → internal state mapping (which AUX channel is arm, flight mode, flip, etc.).
 - Exact stream field layouts and settings group layouts beyond what is listed.
-- RTT on a good link: the client rarely measures one, because a drone Ack's Largest Received is almost always a Sticks message, which isn't in the outbox (found by `link/tests/smoke.rs`). It then keeps the starting 100 ms, so a lost request is resent later than needed. Planned fix: the client sends a Ping about once a second and feeds the Pong's round trip into its outbox's RTT estimate.
+- RTT on a good link: the client rarely measures one, because a drone Ack's Largest Received is almost always a Sticks message, which isn't in the outbox. It then keeps the starting 100 ms, so a lost request is resent later than needed. The drone will have the same problem once it sends its Status stream. Two possible fixes: each side sends a Ping about once a second and feeds the Pong's round trip into its outbox's RTT estimate; or, closer to QUIC (RFC 9002 §5.1), each side also keeps the send times of its last 33 Sequences, so any Largest Received can be timed.
 - Default stream rates. The 20 ms ack delay, 300 ms expiry and 100 ms starting RTT are first guesses, to be measured.

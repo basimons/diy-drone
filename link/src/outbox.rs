@@ -145,7 +145,7 @@ impl<T, const N: usize> Outbox<T, N> {
             .min();
     }
 
-    /// Takes out the first item `matches` picks: a request whose answer arrived, which acknowledges it too
+    /// Takes out the oldest item `matches` picks: a request whose answer arrived, which acknowledges it too
     /// (protocol.md §5.0a). Like an Ack, that ends the doubling of the probe timeout.
     pub fn acknowledge(&mut self, matches: impl FnMut(&T) -> bool) -> Option<T> {
         let acknowledged = self.take_first(matches)?;
@@ -158,6 +158,11 @@ impl<T, const N: usize> Outbox<T, N> {
     /// the probe timeout stays as it is.
     pub fn discard(&mut self, matches: impl FnMut(&T) -> bool) -> Option<T> {
         return self.take_first(matches);
+    }
+
+    /// What is waiting, oldest first: e.g. to keep a new ID within `DRONE_ID_WINDOW` of every request still waiting.
+    pub fn items(&self) -> impl Iterator<Item = &T> {
+        return self.iter().map(|pending| return &pending.item);
     }
 
     pub fn rtt(&self) -> &RttEstimator {
@@ -185,7 +190,14 @@ impl<T, const N: usize> Outbox<T, N> {
     fn take_first(&mut self, mut matches: impl FnMut(&T) -> bool) -> Option<T> {
         let index = self.iter().position(|pending| return matches(&pending.item))?;
         let taken = self.pending[index].take();
+        debug_assert!(taken.is_some(), "position only finds a slot that holds a message");
         self.pending[index..].rotate_left(1); // the rest move up, keeping their order
+        debug_assert!(
+            self.pending
+                .iter()
+                .skip_while(|slot| return slot.is_some())
+                .all(Option::is_none)
+        );
         return taken.map(|pending| return pending.item);
     }
 

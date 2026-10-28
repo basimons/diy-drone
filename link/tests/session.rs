@@ -1,6 +1,6 @@
 //! The pieces together: the example of protocol.md §5.0, where the answer to a request and the Ack for it are lost.
 
-use drone_common::wire::message::{Command, CommandMessage, Message, RequestId};
+use drone_common::wire::message::{Command, CommandMessage, DRONE_ID_WINDOW, Message, RequestId};
 use drone_common::wire::reply::Outcome;
 use drone_link::ack::AckTracker;
 use drone_link::outbox::{Delivery, Outbox};
@@ -13,8 +13,8 @@ use drone_link::time::SessionTime;
 struct Side {
     next_sequence: u16,
     acks: AckTracker,
-    outbox: Outbox<Message, 16>,
-    handled: RecentIds<RequestId, 16>, // the drone: requests it executed; the client: requests it got answers for
+    outbox: Outbox<Message, DRONE_ID_WINDOW>,
+    handled: RecentIds<RequestId, DRONE_ID_WINDOW>, // the drone: requests it executed; the client: requests it got answers for
     sent: Vec<(u16, Message)>,
 }
 
