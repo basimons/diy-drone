@@ -86,3 +86,7 @@ The snippets leave out the collecting of lost messages: `on_ack` borrows the out
 and send them after it returns. [tests/session.rs](tests/session.rs) has the whole thing, compiled and run. It plays
 the example of protocol.md §5.0: the Reply and the Ack are both lost, the client resends, the drone arms only once,
 and both outboxes end up empty.
+
+[tests/smoke.rs](tests/smoke.rs) runs a client and a drone through every layer: messages, packets, COBS frames and
+these pieces, over a simulated radio link that loses, damages and splits frames (up to 30% loss). Every request must
+be executed and answered exactly once, every event shown once, and nothing may be left to resend.
