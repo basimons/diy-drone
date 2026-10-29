@@ -1,0 +1,12 @@
+[package]
+name = "voice-recorder"
+description = "Records the voice-command dataset: prompts for a word, records it while R1 is held, keeps a checklist"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+drone-voice.workspace = true
+
+[lints]
+workspace = true
