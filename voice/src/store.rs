@@ -203,19 +203,27 @@ impl Store {
             ),
             Clip::Background(cell) => (BACKGROUND, BACKGROUND, BACKGROUND, "", &*cell.condition_id),
         };
-        let name = format!(
-            "{}__{}__{}.wav",
-            slug(take.speaker),
-            take.time.format(TIME_IN_FILE_NAME),
-            take.style.map_or_else(|| return "none".to_string(), slug)
-        );
-        let file: PathBuf = ["takes", dir, prompt_id, condition_id, &name].iter().collect();
+        let style = take.style.map_or_else(|| return "none".to_string(), slug);
+        let file_at = |time: DateTime<Utc>| -> PathBuf {
+            let name = format!(
+                "{}__{}__{style}.wav",
+                slug(take.speaker),
+                time.format(TIME_IN_FILE_NAME)
+            );
+            return ["takes", dir, prompt_id, condition_id, &name].iter().collect();
+        };
+        // Two takes can finish in the same millisecond (a full and a last background chunk); never overwrite.
+        let (time, file) = (0..)
+            .map(|later| return take.time + chrono::Duration::milliseconds(later))
+            .map(|time| return (time, file_at(time)))
+            .find(|(_, file)| return !self.root.join(file).exists())
+            .expect("some millisecond is free");
         let path = self.root.join(&file);
         fs::create_dir_all(path.parent().expect("a take path has folders"))?;
         write_wav(&path, take.samples, take.mic.sample_rate)?;
 
         let row = Row {
-            time_utc: take.time.format(TIME_IN_CSV).to_string(),
+            time_utc: time.format(TIME_IN_CSV).to_string(),
             session_id: take.session_id.to_string(),
             event: Event::Take,
             file: file_column(&file),

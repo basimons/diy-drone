@@ -133,3 +133,23 @@ fn rejects_a_zero_target() {
 fn rejects_bad_toml() {
     assert!(matches!(Plan::parse("styles = [").unwrap_err(), PlanError::Toml(_)));
 }
+
+#[test]
+fn rejects_condition_ids_that_are_not_safe_folder_names() {
+    for bad in ["outdoors/windy", "..", "", "Quiet Room"] {
+        let text = SMALL
+            .replace("id = \"quiet-room\"", &format!("id = \"{bad}\""))
+            .replace("\"quiet-room\"", &format!("\"{bad}\""));
+        assert_eq!(
+            Plan::parse(&text).unwrap_err(),
+            PlanError::BadId(bad.to_string()),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn rejects_prompts_without_letters_or_digits() {
+    let text = SMALL.replace("prompts = [\"hummel\"]", "prompts = [\"?!\"]");
+    assert_eq!(Plan::parse(&text).unwrap_err(), PlanError::BadId("?!".to_string()));
+}

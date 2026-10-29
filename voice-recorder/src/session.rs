@@ -14,9 +14,16 @@ pub struct TakeSession {
     next: usize,                         // index of the current prompt; == queue.len() when finished
     last: Option<(PathBuf, QueuedTake)>, // the take ○ and △ act on
     kept: Vec<String>,                   // condition of every take kept this session
-    recording: bool,
+    phase: Phase,
     paused: bool,
     square: Square,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    Ready,
+    Recording,
+    Saving, // R1 released; the take arrives after its post-roll, via `saved` or `not_saved`
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -33,13 +40,13 @@ impl TakeSession {
             next: 0,
             last: None,
             kept: Vec::new(),
-            recording: false,
+            phase: Phase::Ready,
             paused: false,
             square: Square::Up,
         };
     }
 
-    /// `None` once every queued prompt is done.
+    /// `None` once every queued prompt is done; ○ and △ still work then, ✕ finishes.
     pub fn current(&self) -> Option<&QueuedTake> {
         return self.queue.get(self.next);
     }
@@ -53,6 +60,15 @@ impl TakeSession {
         return self.paused;
     }
 
+    pub fn is_recording(&self) -> bool {
+        return self.phase == Phase::Recording;
+    }
+
+    /// The take being recorded or saved was lost (mic gone, disk error); the current prompt stays.
+    pub fn not_saved(&mut self) {
+        self.phase = Phase::Ready;
+    }
+
     pub fn handle(&mut self, input: Input, now: Instant) -> Vec<Effect> {
         if self.paused {
             return match input {
@@ -64,20 +80,25 @@ impl TakeSession {
                 _ => vec![],
             };
         }
-        if self.recording {
-            if input == Input::Up(Button::R1) {
-                self.recording = false;
-                return vec![Effect::StopTake];
+        return match (self.phase, input) {
+            (Phase::Recording, Input::Up(Button::R1)) => {
+                self.phase = Phase::Saving;
+                vec![Effect::StopTake]
             }
-            return vec![];
-        }
+            // The previous take is saved first (it completes on the press), so there must be a prompt after it.
+            (Phase::Saving, Input::Down(Button::R1)) if self.next + 1 < self.queue.len() => self.start_take(),
+            (Phase::Recording | Phase::Saving, _) => vec![],
+            (Phase::Ready, input) => self.handle_ready(input, now),
+        };
+    }
+
+    fn handle_ready(&mut self, input: Input, now: Instant) -> Vec<Effect> {
         return match input {
-            Input::Down(Button::R1) if self.current().is_some() => {
-                self.recording = true;
-                vec![Effect::StartTake]
-            }
+            Input::Down(Button::R1) if self.current().is_some() => self.start_take(),
+            Input::Down(Button::Cross) if self.current().is_none() => vec![Effect::End],
             Input::Down(Button::Options) => {
                 self.paused = true;
+                self.square = Square::Up;
                 vec![]
             }
             Input::Down(Button::Circle) => self.redo(),
@@ -101,6 +122,12 @@ impl TakeSession {
         };
     }
 
+    fn start_take(&mut self) -> Vec<Effect> {
+        self.phase = Phase::Recording;
+        self.square = Square::Up;
+        return vec![Effect::StartTake];
+    }
+
     /// Call every frame: holding □ for a second removes the current cell.
     pub fn tick(&mut self, now: Instant) -> Vec<Effect> {
         let Square::Down(since) = self.square else {
@@ -122,6 +149,9 @@ impl TakeSession {
         self.kept.push(take.cell.condition_id.clone());
         self.last = Some((file, take));
         self.next += 1;
+        if self.phase == Phase::Saving {
+            self.phase = Phase::Ready;
+        }
     }
 
     /// Takes kept this session per condition, in the order the conditions first came up.

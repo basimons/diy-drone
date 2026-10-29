@@ -81,7 +81,8 @@ pub enum PlanError {
     Io(String),
     UnknownCondition(String),
     DuplicatePromptId(String),
-    Empty(&'static str),      // names the list that is empty
+    BadId(String),       // a condition id that isn't a safe folder name, or a prompt that slugs to nothing
+    Empty(&'static str), // names the list that is empty
     ZeroTarget(&'static str), // names the section whose target is 0
 }
 
@@ -92,6 +93,10 @@ impl fmt::Display for PlanError {
             PlanError::Io(e) => write!(f, "cannot read plan file: {e}"),
             PlanError::UnknownCondition(id) => write!(f, "plan uses condition \"{id}\" which is not in [[conditions]]"),
             PlanError::DuplicatePromptId(id) => write!(f, "two prompts have the same id \"{id}\""),
+            PlanError::BadId(id) => write!(
+                f,
+                "\"{id}\" can't be used in a file name (use lowercase letters, digits and -)"
+            ),
             PlanError::Empty(what) => write!(f, "plan has no {what}"),
             PlanError::ZeroTarget(section) => write!(f, "[{section}] has a target of 0"),
         };
@@ -174,6 +179,13 @@ impl Plan {
             return Err(PlanError::ZeroTarget(section));
         }
 
+        if let Some(bad) = raw
+            .conditions
+            .iter()
+            .find(|c| return c.id.is_empty() || slug(&c.id) != c.id)
+        {
+            return Err(PlanError::BadId(bad.id.clone()));
+        }
         let known: HashSet<&str> = raw.conditions.iter().map(|c| return c.id.as_str()).collect();
         let used = [
             &raw.command.conditions,
@@ -218,6 +230,13 @@ impl Plan {
             ),
         ];
 
+        if let Some(bad) = sections
+            .iter()
+            .flat_map(|(_, prompts, _, _)| return prompts.iter())
+            .find(|text| return slug(text).is_empty())
+        {
+            return Err(PlanError::BadId(bad.clone()));
+        }
         let mut seen = HashSet::new();
         if let Some(duplicate) = sections
             .iter()

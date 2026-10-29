@@ -213,3 +213,98 @@ fn options_ends_a_background_session_only_while_stopped() {
     session.handle(Input::Down(Button::R1));
     assert_eq!(session.handle(Input::Down(Button::Options)), [Effect::End]);
 }
+
+fn release_without_saving(session: &mut TakeSession, now: Instant) {
+    assert_eq!(session.handle(Input::Down(Button::R1), now), [Effect::StartTake]);
+    assert_eq!(session.handle(Input::Up(Button::R1), now), [Effect::StopTake]);
+}
+
+#[test]
+fn buttons_wait_while_the_last_take_is_still_being_saved() {
+    let now = Instant::now();
+    let mut session = session(&["flip", "land", "up"]);
+    record(&mut session, "a.wav", now);
+    release_without_saving(&mut session, now);
+    assert_eq!(press(&mut session, Button::Circle, now), []);
+    assert_eq!(press(&mut session, Button::Square, now), []);
+    assert_eq!(press(&mut session, Button::Triangle, now), []);
+    assert_eq!(press(&mut session, Button::Options, now), []);
+    assert_eq!(current(&session), Some("land"));
+    session.saved(PathBuf::from("b.wav"));
+    assert_eq!(current(&session), Some("up"));
+    assert_eq!(
+        press(&mut session, Button::Circle, now),
+        [Effect::Reject(PathBuf::from("b.wav"))]
+    );
+    assert_eq!(current(&session), Some("land"));
+}
+
+#[test]
+fn r1_again_while_saving_starts_the_next_take() {
+    let now = Instant::now();
+    let mut session = session(&["flip", "land"]);
+    release_without_saving(&mut session, now);
+    assert_eq!(session.handle(Input::Down(Button::R1), now), [Effect::StartTake]);
+    session.saved(PathBuf::from("a.wav"));
+    assert_eq!(current(&session), Some("land"));
+    assert!(session.is_recording());
+}
+
+#[test]
+fn r1_while_saving_the_last_prompt_waits() {
+    let now = Instant::now();
+    let mut session = session(&["flip"]);
+    release_without_saving(&mut session, now);
+    assert_eq!(session.handle(Input::Down(Button::R1), now), []);
+}
+
+#[test]
+fn a_take_that_could_not_be_saved_lets_the_buttons_work_again() {
+    let now = Instant::now();
+    let mut session = session(&["flip", "land"]);
+    release_without_saving(&mut session, now);
+    session.not_saved();
+    assert_eq!(current(&session), Some("flip"));
+    assert!(!session.is_recording());
+    press(&mut session, Button::Square, now);
+    assert_eq!(current(&session), Some("land"));
+}
+
+#[test]
+fn a_lost_take_while_recording_also_resets() {
+    let now = Instant::now();
+    let mut session = session(&["flip"]);
+    session.handle(Input::Down(Button::R1), now);
+    session.not_saved();
+    assert!(!session.is_recording());
+    assert_eq!(session.handle(Input::Down(Button::R1), now), [Effect::StartTake]);
+}
+
+#[test]
+fn the_last_take_can_still_be_redone_before_finishing() {
+    let now = Instant::now();
+    let mut session = session(&["flip"]);
+    record(&mut session, "a.wav", now);
+    assert_eq!(current(&session), None);
+    assert_eq!(
+        press(&mut session, Button::Triangle, now),
+        [Effect::Play(PathBuf::from("a.wav"))]
+    );
+    assert_eq!(
+        press(&mut session, Button::Circle, now),
+        [Effect::Reject(PathBuf::from("a.wav"))]
+    );
+    assert_eq!(current(&session), Some("flip"));
+    record(&mut session, "b.wav", now);
+    assert_eq!(press(&mut session, Button::Cross, now), [Effect::End]);
+}
+
+#[test]
+fn holding_square_does_nothing_once_recording_starts() {
+    let now = Instant::now();
+    let mut session = session(&["flip", "land"]);
+    session.handle(Input::Down(Button::Square), now);
+    session.handle(Input::Down(Button::R1), now);
+    assert_eq!(session.tick(now + Duration::from_secs(2)), []);
+    assert_eq!(current(&session), Some("flip"));
+}

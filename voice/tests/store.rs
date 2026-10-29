@@ -256,3 +256,16 @@ fn manifest_has_the_documented_columns() {
         )
     );
 }
+
+#[test]
+fn two_takes_in_the_same_millisecond_both_survive() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let (mic, first, second) = (mic(), vec![1_i16; 10], vec![2_i16; 20]);
+    let a = store.save(take(Clip::Prompt(&flip()), &first, at(0), &mic)).unwrap();
+    let b = store.save(take(Clip::Prompt(&flip()), &second, at(0), &mic)).unwrap();
+    assert_ne!(a, b);
+    assert_eq!(read_wav(&dir.path().join(&a)).unwrap().0, first);
+    assert_eq!(read_wav(&dir.path().join(&b)).unwrap().0, second);
+    assert_eq!(store.progress().takes(&flip()), 2);
+}

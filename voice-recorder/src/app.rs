@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use drone_voice::{
-    BackgroundCell, Chunker, Clip, Mic, MicEvent, NewTake, Plan, PromptKind, PushToTalk, Segment, Store, Warning,
-    capture_volume, pick, read_wav, warnings,
+    BackgroundCell, Chunker, Clip, Mic, MicEvent, MicInfo, NewTake, Plan, PromptKind, PushToTalk, Segment, Store,
+    Warning, capture_volume, pick, read_wav, warnings,
 };
 use eframe::egui;
 use voice_recorder::{BackgroundSession, Button, Effect, Input, Row, Setup, Start, TakeSession};
@@ -41,14 +41,16 @@ enum Screen {
 struct Takes {
     session: TakeSession,
     ptt: PushToTalk,
-    rate: u32,
-    recording: bool,
+    mic: MicInfo,           // as at the session's start, so saving never depends on a live mic
+    volume: Option<String>, // capture volume at the session's start
     id: String,
 }
 
 struct Background {
     session: BackgroundSession,
     chunker: Option<Chunker>, // Some while recording
+    mic: MicInfo,
+    volume: Option<String>,
     id: String,
 }
 
@@ -123,9 +125,8 @@ impl App {
         self.mic_tried = Instant::now();
         match &mut self.screen {
             Screen::Takes(takes) => {
-                takes.ptt = PushToTalk::new(takes.rate);
-                takes.session.handle(Input::Up(Button::R1), Instant::now());
-                takes.recording = false;
+                takes.ptt = PushToTalk::new(takes.mic.sample_rate);
+                takes.session.not_saved();
             }
             Screen::Background(_) => self.stop_background(),
             Screen::Setup(_) | Screen::Summary(_) => {}
@@ -133,6 +134,11 @@ impl App {
     }
 
     fn handle(&mut self, input: Input) {
+        let recording_screen = matches!(self.screen, Screen::Takes(_) | Screen::Background(_));
+        if recording_screen && input == Input::Down(Button::R1) && self.mic.is_err() {
+            self.message = Some("No microphone: reconnect the controller over USB.".to_string());
+            return;
+        }
         let effects = match &mut self.screen {
             Screen::Setup(setup) => {
                 let Input::Down(button) = input else {
@@ -156,11 +162,18 @@ impl App {
     }
 
     fn begin(&mut self, start: Start) {
-        if let Some(reason) = self.not_ready() {
-            self.message = Some(reason);
-            return;
-        }
-        let rate = self.mic.as_ref().map_or(0, |mic| return mic.info().sample_rate);
+        let mic = match (&self.mic, self.controller.is_connected()) {
+            (Err(reason), _) => {
+                self.message = Some(reason.clone());
+                return;
+            }
+            (Ok(_), false) => {
+                self.message = Some("No controller found. Plug the DualSense in over USB.".to_string());
+                return;
+            }
+            (Ok(mic), true) => mic.info().clone(),
+        };
+        let volume = capture_volume(&mic);
         let id = Utc::now().format(TIME_IN_SESSION_ID).to_string();
         self.last = None;
         self.message = None;
@@ -180,9 +193,9 @@ impl App {
                 }
                 self.screen = Screen::Takes(Takes {
                     session: TakeSession::new(queue),
-                    ptt: PushToTalk::new(rate),
-                    rate,
-                    recording: false,
+                    ptt: PushToTalk::new(mic.sample_rate),
+                    mic,
+                    volume,
                     id,
                 });
             }
@@ -190,37 +203,27 @@ impl App {
                 self.screen = Screen::Background(Background {
                     session: BackgroundSession::new(cell),
                     chunker: None,
+                    mic,
+                    volume,
                     id,
                 });
             }
         }
     }
 
-    fn not_ready(&self) -> Option<String> {
-        if let Err(reason) = &self.mic {
-            return Some(reason.clone());
-        }
-        if !self.controller.is_connected() {
-            return Some("No controller found. Plug the DualSense in over USB.".to_string());
-        }
-        return None;
-    }
-
     fn run(&mut self, effect: Effect) {
         let now = Utc::now();
         let result = match effect {
             Effect::StartTake => {
-                if let Screen::Takes(takes) = &mut self.screen {
-                    takes.recording = true;
-                    if let Some(previous) = takes.ptt.press() {
-                        self.save_segment(previous);
-                    }
+                if let Screen::Takes(takes) = &mut self.screen
+                    && let Some(previous) = takes.ptt.press()
+                {
+                    self.save_segment(previous);
                 }
                 Ok(())
             }
             Effect::StopTake => {
                 if let Screen::Takes(takes) = &mut self.screen {
-                    takes.recording = false;
                     takes.ptt.release();
                 }
                 Ok(())
@@ -253,14 +256,14 @@ impl App {
     }
 
     fn save_segment(&mut self, segment: Segment) {
-        let (Screen::Takes(takes), Ok(mic)) = (&mut self.screen, &self.mic) else {
+        let Screen::Takes(takes) = &mut self.screen else {
             return;
         };
         let Some(queued) = takes.session.current().cloned() else {
+            debug_assert!(false, "a take finished with no prompt to save it under");
             return;
         };
         let found = warnings(queued.cell.kind, &segment);
-        let volume = capture_volume(mic.info());
         let saved = self.store.save(NewTake {
             clip: Clip::Prompt(&queued.cell),
             samples: &segment.samples,
@@ -268,8 +271,8 @@ impl App {
             speaker: &self.speaker,
             session_id: &takes.id,
             time: Utc::now(),
-            mic: mic.info(),
-            capture_volume: volume.as_deref(),
+            mic: &takes.mic,
+            capture_volume: takes.volume.as_deref(),
             warnings: &found,
         });
         match saved {
@@ -279,16 +282,16 @@ impl App {
                     waveform: waveform(&segment.samples),
                     warnings: found,
                 });
-                if takes.session.current().is_none() {
-                    self.end();
-                }
             }
-            Err(error) => self.message = Some(format!("Take not saved: {error}")),
+            Err(error) => {
+                takes.session.not_saved();
+                self.message = Some(format!("Take not saved: {error}"));
+            }
         }
     }
 
     fn start_background(&mut self) {
-        let (Screen::Background(background), Ok(mic)) = (&mut self.screen, &self.mic) else {
+        let Screen::Background(background) = &mut self.screen else {
             return;
         };
         let left = background
@@ -301,7 +304,7 @@ impl App {
             self.message = Some("This condition has all its background already.".to_string());
             return;
         }
-        background.chunker = Some(Chunker::new(mic.info().sample_rate, left));
+        background.chunker = Some(Chunker::new(background.mic.sample_rate, left));
     }
 
     fn stop_background(&mut self) {
@@ -315,10 +318,9 @@ impl App {
     }
 
     fn save_chunk(&mut self, samples: &[i16]) {
-        let (Screen::Background(background), Ok(mic)) = (&mut self.screen, &self.mic) else {
+        let Screen::Background(background) = &mut self.screen else {
             return;
         };
-        let volume = capture_volume(mic.info());
         let cell: BackgroundCell = background.session.cell().clone();
         let saved = self.store.save(NewTake {
             clip: Clip::Background(&cell),
@@ -327,13 +329,13 @@ impl App {
             speaker: &self.speaker,
             session_id: &background.id,
             time: Utc::now(),
-            mic: mic.info(),
-            capture_volume: volume.as_deref(),
+            mic: &background.mic,
+            capture_volume: background.volume.as_deref(),
             warnings: &[],
         });
         match saved {
             Ok(file) => {
-                let length = Duration::from_millis(samples.len() as u64 * 1000 / u64::from(mic.info().sample_rate));
+                let length = Duration::from_millis(samples.len() as u64 * 1000 / u64::from(background.mic.sample_rate));
                 background.session.chunk_saved(file, length);
                 self.last = Some(LastTake {
                     waveform: waveform(samples),
@@ -492,6 +494,9 @@ impl App {
         };
         let (number, total) = takes.session.position();
         let Some(queued) = takes.session.current() else {
+            ui.heading("All done for this session");
+            ui.label("○ redo the last take · △ play it back · ✕ finish");
+            self.draw_last(ui);
             return;
         };
         ui.label(format!(
@@ -508,7 +513,7 @@ impl App {
             ui.label(egui::RichText::new(prompt_text(&queued.cell.text)).size(56.0).strong());
             ui.label(egui::RichText::new(format!("Style: {}", queued.style)).size(22.0));
             ui.add_space(16.0);
-            let recording = if takes.recording {
+            let recording = if takes.session.is_recording() {
                 "● Recording"
             } else {
                 "Hold R1 to speak"
