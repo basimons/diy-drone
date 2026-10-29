@@ -7,10 +7,11 @@ use drone_voice::{
     BackgroundCell, Chunker, Clip, Mic, MicEvent, MicInfo, NewTake, Plan, PromptKind, PushToTalk, Segment, Store,
     Warning, capture_volume, pick, read_wav, warnings,
 };
-use eframe::egui;
+use eframe::egui::{self, RichText};
 use voice_recorder::{BackgroundSession, Button, Effect, Input, Row, Setup, Start, TakeSession};
 
 use crate::input::{Controller, keyboard};
+use crate::look;
 use crate::playback::{Playback, play};
 
 const MIC_RETRY: Duration = Duration::from_secs(1);
@@ -392,22 +393,22 @@ impl eframe::App for App {
 
 impl App {
     fn draw(&mut self, ui: &mut egui::Ui) {
-        match &self.screen {
-            Screen::Setup(_) => self.draw_setup(ui),
-            Screen::Takes(_) => self.draw_takes(ui),
-            Screen::Background(_) => self.draw_background(ui),
-            Screen::Summary(lines) => {
-                ui.heading("Session done");
-                lines.iter().for_each(|line| return drop(ui.label(line)));
-                ui.label(format!("Still to record overall: {} takes", self.takes_left()));
-                ui.add_space(12.0);
-                ui.label("✕: back to the start screen");
-            }
-        }
-        if let Some(message) = &self.message {
-            ui.add_space(12.0);
-            ui.colored_label(egui::Color32::from_rgb(220, 120, 40), message);
-        }
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(32, 24))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    match &self.screen {
+                        Screen::Setup(_) => self.draw_setup(ui),
+                        Screen::Takes(_) => self.draw_takes(ui),
+                        Screen::Background(_) => self.draw_background(ui),
+                        Screen::Summary(lines) => self.draw_summary(ui, lines),
+                    }
+                    if let Some(message) = &self.message {
+                        ui.add_space(12.0);
+                        ui.label(RichText::new(format!("⚠ {message}")).color(look::WARNING));
+                    }
+                });
+            });
     }
 
     fn takes_left(&self) -> u32 {
@@ -421,14 +422,33 @@ impl App {
             .sum();
     }
 
+    fn overall(&self, ui: &mut egui::Ui) {
+        let total: u32 = self.plan.prompt_cells().iter().map(|cell| return cell.target).sum();
+        let done = total - self.takes_left().min(total);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Overall").color(look::WEAK));
+            ui.add(
+                egui::ProgressBar::new(done as f32 / total.max(1) as f32)
+                    .desired_width(320.0)
+                    .desired_height(8.0)
+                    .fill(look::ACCENT),
+            );
+            ui.label(format!("{done} / {total} takes"));
+        });
+    }
+
     fn draw_setup(&mut self, ui: &mut egui::Ui) {
         let progress = self.store.progress();
-        ui.heading("Where are you right now?");
+        ui.heading(RichText::new("Where are you right now?").strong());
+        ui.label(
+            RichText::new("Tick what you can do now; the app only asks for what is still missing there.")
+                .color(look::WEAK),
+        );
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label("Speaker:");
-            ui.text_edit_singleline(&mut self.speaker);
+            ui.label("Speaker");
+            ui.add(egui::TextEdit::singleline(&mut self.speaker).desired_width(220.0));
         });
-        ui.add_space(8.0);
         let Screen::Setup(setup) = &self.screen else {
             return;
         };
@@ -438,54 +458,116 @@ impl App {
             Ok(_) => None,
         };
         for row in setup.rows() {
-            let pointer = if setup.cursor() == row { "▶ " } else { "  " };
-            let tick = if setup.is_ticked(row) { "☑" } else { "☐" };
-            let text = match row {
-                Row::Condition(i) => {
+            match row {
+                Row::Condition(0) => look::section(ui, "Conditions"),
+                Row::Kind(PromptKind::Command) => look::section(ui, "What to record"),
+                Row::Length => look::section(ui, "Session"),
+                _ => {}
+            }
+            let selected = setup.cursor() == row;
+            let tick = |ui: &mut egui::Ui| {
+                let (glyph, color) = if setup.is_ticked(row) {
+                    ("☑", look::ACCENT)
+                } else {
+                    ("☐", look::WEAK)
+                };
+                ui.label(RichText::new(glyph).size(22.0).color(color));
+            };
+            match row {
+                Row::Condition(i) => look::card(ui, selected, |ui| {
                     let condition = &self.plan.conditions()[i];
-                    let cells = self
+                    let (kept, target) = self
                         .plan
                         .prompt_cells()
                         .iter()
-                        .filter(|c| return c.condition_id == condition.id);
-                    let (kept, target) = cells.fold((0, 0), |(kept, target), cell| {
-                        return (kept + progress.takes(cell).min(cell.target), target + cell.target);
-                    });
+                        .filter(|c| return c.condition_id == condition.id)
+                        .fold((0, 0), |(kept, target), cell| {
+                            return (kept + progress.takes(cell).min(cell.target), target + cell.target);
+                        });
                     let background = self
                         .plan
                         .background_cells()
                         .iter()
                         .find(|c| return c.condition_id == condition.id);
-                    let minutes_text = background.map_or(String::new(), |cell| {
-                        return format!(
-                            " · background {} / {}",
-                            minutes(progress.recorded(cell)),
-                            minutes(cell.target)
-                        );
+                    ui.horizontal(|ui| {
+                        tick(ui);
+                        ui.label(&condition.label);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if let Some(cell) = background {
+                                let text = format!(
+                                    "background {} / {}",
+                                    minutes(progress.recorded(cell)),
+                                    minutes(cell.target)
+                                );
+                                ui.label(RichText::new(text).small().color(look::WEAK));
+                            }
+                            if target > 0 {
+                                ui.label(RichText::new(format!("{kept} / {target}")).color(look::TEXT));
+                                ui.add(
+                                    egui::ProgressBar::new(kept as f32 / target as f32)
+                                        .desired_width(160.0)
+                                        .desired_height(8.0)
+                                        .fill(look::ACCENT),
+                                );
+                            }
+                        });
                     });
-                    format!("{tick} {}   {kept} / {target} takes{minutes_text}", condition.label)
+                }),
+                Row::Kind(kind) => look::card(ui, selected, |ui| {
+                    ui.horizontal(|ui| {
+                        tick(ui);
+                        ui.label(kind_label(kind));
+                    });
+                }),
+                Row::Background => look::card(ui, selected, |ui| {
+                    ui.horizontal(|ui| {
+                        tick(ui);
+                        ui.label("Background only");
+                        ui.label(RichText::new("hands-free; tick exactly one condition").color(look::WEAK));
+                    });
+                }),
+                Row::Length => look::card(ui, selected, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Length");
+                        ui.label(RichText::new(format!("◀  {} takes  ▶", setup.length())).strong());
+                        ui.label(RichText::new(format!("≈ {} min", setup.length() / 8)).color(look::WEAK));
+                    });
+                }),
+                Row::Start => {
+                    ui.add_space(8.0);
+                    let (text, fill) = match (&ready, setup.start()) {
+                        (Some(reason), _) => (format!("Can't start: {reason}"), look::WEAK),
+                        (None, None) => ("Tick a condition and something to record".to_string(), look::WEAK),
+                        (None, Some(_)) => ("✕  Start".to_string(), look::ACCENT),
+                    };
+                    let stroke = if selected {
+                        egui::Stroke::new(3.0, look::TEXT)
+                    } else {
+                        egui::Stroke::NONE
+                    };
+                    egui::Frame::new()
+                        .fill(fill)
+                        .stroke(stroke)
+                        .corner_radius(10)
+                        .inner_margin(egui::Margin::symmetric(18, 10))
+                        .show(ui, |ui| {
+                            ui.label(RichText::new(text).size(20.0).strong().color(egui::Color32::BLACK));
+                        });
                 }
-                Row::Kind(kind) => format!("{tick} {}", kind_label(kind)),
-                Row::Background => format!("{tick} Background only (hands-free; tick exactly one condition)"),
-                Row::Length => format!("Session length:  ◀ {} takes ▶", setup.length()),
-                Row::Start => match (&ready, setup.start()) {
-                    (Some(reason), _) => format!("Start — not possible: {reason}"),
-                    (None, None) => "Start — tick a condition and something to record".to_string(),
-                    (None, Some(_)) => "Start (✕)".to_string(),
-                },
-            };
-            if matches!(row, Row::Kind(PromptKind::Command) | Row::Background | Row::Length) {
-                ui.add_space(6.0);
             }
-            ui.label(egui::RichText::new(format!("{pointer}{text}")).size(18.0).monospace());
         }
-        ui.add_space(8.0);
-        let total: u32 = self.plan.prompt_cells().iter().map(|cell| return cell.target).sum();
-        ui.label(format!(
-            "Overall: {} of {total} takes still to record",
-            self.takes_left()
-        ));
-        ui.label("D-pad: move · ✕: tick · ◀ ▶: session length · (keyboard: arrows, Enter)");
+        ui.add_space(14.0);
+        self.overall(ui);
+        ui.add_space(6.0);
+        look::hints(
+            ui,
+            &[
+                (look::DPAD, "move"),
+                (look::CROSS, "tick / start"),
+                (("◀ ▶", look::TEXT), "length"),
+            ],
+        );
+        ui.label(RichText::new("Keyboard: arrows, Enter").small().color(look::WEAK));
     }
 
     fn draw_takes(&self, ui: &mut egui::Ui) {
@@ -494,37 +576,92 @@ impl App {
         };
         let (number, total) = takes.session.position();
         let Some(queued) = takes.session.current() else {
-            ui.heading("All done for this session");
-            ui.label("○ redo the last take · △ play it back · ✕ finish");
+            ui.heading(RichText::new("All done for this session").strong());
+            ui.add_space(8.0);
             self.draw_last(ui);
+            ui.add_space(12.0);
+            look::hints(
+                ui,
+                &[
+                    (look::CIRCLE, "redo the last take"),
+                    (look::TRIANGLE, "play it"),
+                    (look::CROSS, "finish"),
+                ],
+            );
             return;
         };
-        ui.label(format!(
-            "Take {number} / {total} · {}",
-            self.label(&queued.cell.condition_id)
-        ));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("Take {number} of {total}")).color(look::WEAK));
+            look::chip(ui, &self.label(&queued.cell.condition_id), look::WEAK);
+            ui.add(
+                egui::ProgressBar::new((number - 1) as f32 / total.max(1) as f32)
+                    .desired_width(200.0)
+                    .fill(look::ACCENT),
+            );
+        });
+        ui.add_space(20.0);
         if takes.session.is_paused() {
-            ui.heading("Paused — OPTIONS: resume · ✕: end session");
+            look::card(ui, true, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(30.0);
+                    ui.heading(RichText::new("Paused").strong());
+                    ui.add_space(10.0);
+                    look::hints(ui, &[(look::OPTIONS, "resume"), (look::CROSS, "end the session")]);
+                    ui.add_space(30.0);
+                });
+            });
             return;
         }
-        ui.add_space(24.0);
-        ui.vertical_centered(|ui| {
-            ui.label("Say:");
-            ui.label(egui::RichText::new(prompt_text(&queued.cell.text)).size(56.0).strong());
-            ui.label(egui::RichText::new(format!("Style: {}", queued.style)).size(22.0));
-            ui.add_space(16.0);
-            let recording = if takes.session.is_recording() {
-                "● Recording"
-            } else {
-                "Hold R1 to speak"
-            };
-            ui.label(egui::RichText::new(recording).size(24.0));
-            ui.add(egui::ProgressBar::new(self.level).desired_width(400.0));
-        });
+        let recording = takes.session.is_recording();
+        let frame_color = if recording {
+            look::RECORDING
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgb(36, 36, 42))
+            .stroke(egui::Stroke::new(3.0, frame_color))
+            .corner_radius(16)
+            .inner_margin(egui::Margin::symmetric(20, 28))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new("Say").color(look::WEAK));
+                    ui.label(RichText::new(prompt_text(&queued.cell.text)).size(64.0).strong());
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let width = 80.0 + queued.style.len() as f32 * 9.0;
+                        ui.add_space((ui.available_width() - width).max(0.0) / 2.0);
+                        ui.label(RichText::new("how:").color(look::WEAK));
+                        look::chip(ui, &queued.style, look::ACCENT);
+                    });
+                    ui.add_space(18.0);
+                    let (state, color) = if recording {
+                        ("●  Recording", look::RECORDING)
+                    } else {
+                        ("Hold R1 to speak", look::TEXT)
+                    };
+                    ui.label(RichText::new(state).size(26.0).strong().color(color));
+                    look::meter(ui, self.level, recording);
+                });
+            });
         self.draw_last(ui);
         ui.add_space(12.0);
-        ui.label("○ redo last take · △ play back · □ skip (hold 1 s: never ask again) · OPTIONS: pause");
-        ui.label("(keyboard: Space = R1, Backspace = ○, P = △, S = □, Esc = OPTIONS)");
+        look::hints(
+            ui,
+            &[
+                (look::R1, "hold to speak"),
+                (look::CIRCLE, "redo"),
+                (look::TRIANGLE, "play back"),
+                (look::SQUARE, "skip (hold 1 s: never ask again)"),
+                (look::OPTIONS, "pause"),
+            ],
+        );
+        ui.label(
+            RichText::new("Keyboard: Space = R1, Backspace = ○, P = △, S = □, Esc = OPTIONS")
+                .small()
+                .color(look::WEAK),
+        );
     }
 
     fn draw_background(&self, ui: &mut egui::Ui) {
@@ -533,22 +670,62 @@ impl App {
         };
         let cell = background.session.cell();
         let left = cell.target.saturating_sub(self.store.progress().recorded(cell));
-        ui.heading(format!("Background: {}", self.label(&cell.condition_id)));
-        ui.label(format!(
-            "Kept this session: {} · still needed: {}",
-            minutes(background.session.recorded()),
-            minutes(left)
-        ));
+        let recording = background.session.is_recording();
+        ui.heading(RichText::new(format!("Background: {}", self.label(&cell.condition_id))).strong());
+        ui.label(RichText::new("Put the controller down and let it listen. Don't talk to it.").color(look::WEAK));
         ui.add_space(16.0);
-        let state = if background.session.is_recording() {
-            "● Recording — R1 to stop"
+        let frame_color = if recording {
+            look::RECORDING
         } else {
-            "R1 to start"
+            egui::Color32::TRANSPARENT
         };
-        ui.label(egui::RichText::new(state).size(28.0));
-        ui.add(egui::ProgressBar::new(self.level).desired_width(400.0));
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgb(36, 36, 42))
+            .stroke(egui::Stroke::new(3.0, frame_color))
+            .corner_radius(16)
+            .inner_margin(egui::Margin::symmetric(20, 28))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.vertical_centered(|ui| {
+                    let (state, color) = if recording {
+                        ("●  Recording", look::RECORDING)
+                    } else {
+                        ("Press R1 to start", look::TEXT)
+                    };
+                    ui.label(RichText::new(state).size(30.0).strong().color(color));
+                    ui.label(format!(
+                        "kept this session {}  ·  still needed {}",
+                        minutes(background.session.recorded()),
+                        minutes(left)
+                    ));
+                    look::meter(ui, self.level, recording);
+                });
+            });
         self.draw_last(ui);
-        ui.label("○ drop the last piece · △ play it · OPTIONS: end (while stopped)");
+        ui.add_space(12.0);
+        look::hints(
+            ui,
+            &[
+                (look::R1, "start / stop"),
+                (look::CIRCLE, "drop the last piece"),
+                (look::TRIANGLE, "play it"),
+                (look::OPTIONS, "end (while stopped)"),
+            ],
+        );
+    }
+
+    fn draw_summary(&self, ui: &mut egui::Ui, lines: &[String]) {
+        ui.heading(RichText::new("Session done").strong());
+        ui.add_space(10.0);
+        look::card(ui, false, |ui| {
+            lines
+                .iter()
+                .for_each(|line| return drop(ui.label(RichText::new(line).size(20.0))));
+        });
+        ui.add_space(12.0);
+        self.overall(ui);
+        ui.add_space(12.0);
+        look::hints(ui, &[(look::CROSS, "back to the start screen")]);
     }
 
     fn draw_last(&self, ui: &mut egui::Ui) {
@@ -556,27 +733,33 @@ impl App {
             return;
         };
         ui.add_space(12.0);
-        ui.label("Last take:");
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(WAVEFORM_COLUMNS as f32 * 2.0, 80.0), egui::Sense::hover());
-        let painter = ui.painter_at(rect);
-        let stroke = egui::Stroke::new(2.0, ui.visuals().text_color());
-        for (i, (low, high)) in last.waveform.iter().enumerate() {
-            let x = rect.left() + i as f32 * 2.0;
-            painter.line_segment(
-                [
-                    egui::pos2(x, rect.center().y - high * 40.0),
-                    egui::pos2(x, rect.center().y - low * 40.0),
-                ],
-                stroke,
-            );
-        }
-        if !last.warnings.is_empty() {
-            let names: Vec<&str> = last.warnings.iter().map(|w| return warning_text(*w)).collect();
-            ui.colored_label(
-                egui::Color32::from_rgb(220, 120, 40),
-                format!("Check: {}", names.join(", ")),
-            );
-        }
+        look::card(ui, false, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Last take").color(look::WEAK));
+                let names: Vec<&str> = last.warnings.iter().map(|w| return warning_text(*w)).collect();
+                if names.is_empty() {
+                    ui.label(RichText::new("✔ looks fine").color(look::WEAK));
+                } else {
+                    ui.label(RichText::new(format!("⚠ {}", names.join(", "))).color(look::WARNING));
+                }
+            });
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 70.0), egui::Sense::hover());
+            let painter = ui.painter_at(rect);
+            let step = rect.width() / WAVEFORM_COLUMNS as f32;
+            let stroke = egui::Stroke::new(step.max(1.0) * 0.7, look::ACCENT);
+            for (i, (low, high)) in last.waveform.iter().enumerate() {
+                let x = rect.left() + (i as f32 + 0.5) * step;
+                // Scaled up 4×: takes rarely come near full scale, and the shape matters more than the level here.
+                let (top, bottom) = ((high * 4.0).min(1.0), (low * 4.0).max(-1.0));
+                painter.line_segment(
+                    [
+                        egui::pos2(x, rect.center().y - top * 34.0),
+                        egui::pos2(x, rect.center().y - bottom * 34.0 + 1.0),
+                    ],
+                    stroke,
+                );
+            }
+        });
     }
 }
 

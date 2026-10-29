@@ -2,6 +2,7 @@
 
 mod app;
 mod input;
+mod look;
 mod playback;
 
 use std::path::PathBuf;
@@ -16,14 +17,17 @@ fn main() -> anyhow::Result<()> {
     let store = Store::open(&data).with_context(|| return format!("opening {}", data.display()))?;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1000.0, 760.0])
+            .with_inner_size([1000.0, 960.0])
             .with_title("Voice recorder"),
         ..Default::default()
     };
     eframe::run_native(
         "voice-recorder",
         options,
-        Box::new(|_| return Ok(Box::new(app::App::new(plan, store)))),
+        Box::new(|cc| {
+            look::apply(&cc.egui_ctx);
+            return Ok(Box::new(app::App::new(plan, store)));
+        }),
     )
     .map_err(|e| return anyhow::anyhow!("window failed: {e}"))?;
     return Ok(());
