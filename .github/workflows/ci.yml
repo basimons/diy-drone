@@ -13,6 +13,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      # The serial-port and gamepad crates in the client need the udev headers on Linux.
-      - run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      # The serial-port and gamepad crates need the udev headers on Linux, the audio crate (cpal) the ALSA headers.
+      - run: sudo apt-get update && sudo apt-get install -y libudev-dev libasound2-dev
       - run: scripts/check.sh

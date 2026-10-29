@@ -34,6 +34,7 @@ git config core.hooksPath .githooks
 Pull requests run the same checks on GitHub Actions (`.github/workflows/ci.yml`).
 
 On Linux the client needs `libudev` (preinstalled on most desktops; `libudev-dev` / `systemd-devel` to build).
+The voice crates also need ALSA, the Linux sound system (`libasound2-dev` / `alsa-lib-devel` to build).
 
 ## Building for the Pi
 
