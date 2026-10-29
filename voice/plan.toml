@@ -1,0 +1,71 @@
+# What voice-recorder asks for. Each prompt × condition is one checklist item ("cell") that needs `target` takes.
+# Raise a target to put cells back on the checklist; the app never writes this file.
+# Design: docs/superpowers/specs/2026-10-29-voice-recorder-design.md
+
+# One is picked at random per take and shown on screen, so takes vary without thinking about it.
+styles = ["normal", "fast", "slow", "quiet", "loud", "flat / tired", "urgent", "annoyed"]
+
+[[conditions]]
+id = "quiet-room"
+label = "Quiet room"
+
+[[conditions]]
+id = "tv-music"
+label = "TV / music on"
+
+[[conditions]]
+id = "fan"
+label = "Fan / kitchen hood running"
+
+[[conditions]]
+id = "moving-sticks"
+label = "While moving the sticks"
+
+[[conditions]]
+id = "outdoors-calm"
+label = "Outdoors, calm"
+
+[[conditions]]
+id = "outdoors-windy"
+label = "Outdoors, windy"
+
+[[conditions]]
+id = "drone-nearby"
+label = "Drone running nearby"
+
+# Takes are only spoken live where noise can't be faked well; TV, music and fan noise come from the background
+# recordings, mixed into clean takes at training time.
+[command]
+target = 12
+conditions = ["quiet-room", "moving-sticks", "outdoors-windy", "drone-nearby"]
+prompts = [
+    "stop", "land", "come back",
+    "takeoff", "hover",
+    "forward", "back", "left", "right", "up", "down", "turn left", "turn right",
+    "flip", "spin", "circle", "follow me", "photo", "record",
+]
+
+[wake_word]
+target = 40
+conditions = ["quiet-room", "moving-sticks", "outdoors-windy", "drone-nearby"]
+prompt = "Hommel"
+
+# "Hommel, <command>" for every command above.
+[phrase]
+target = 5
+conditions = ["quiet-room", "outdoors-windy"]
+
+# Not commands: teaches the model what to ignore. Several sound like "Hommel" on purpose.
+[near_miss]
+target = 5
+conditions = ["quiet-room", "moving-sticks"]
+prompts = [
+    "hommels", "hummel", "hamel", "Rommel", "hemel", "om elf", "mommel",
+    "lift", "flipper", "back off", "landen",
+    "any short sentence",
+]
+
+# Hands-free, minutes per condition.
+[background]
+minutes = 5
+conditions = ["quiet-room", "tv-music", "fan", "moving-sticks", "outdoors-calm", "outdoors-windy", "drone-nearby"]

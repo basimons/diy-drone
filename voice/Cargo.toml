@@ -1,0 +1,13 @@
+[package]
+name = "drone-voice"
+description = "Voice commands on the ground side: the recording plan, takes on disk, picking prompts, push-to-talk capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+
+[lints]
+workspace = true
