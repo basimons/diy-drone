@@ -2,10 +2,12 @@
 
 mod picker;
 mod plan;
+mod segment;
 mod store;
 mod wav;
 
 pub use picker::{QueuedTake, Selection, pick};
 pub use plan::{BackgroundCell, Condition, Plan, PlanError, PromptCell, PromptKind, slug};
+pub use segment::{Chunker, PushToTalk, Segment, warnings};
 pub use store::{Clip, MicInfo, NewTake, Progress, Store, StoreError, Warning};
 pub use wav::read_wav;
